@@ -1,0 +1,6 @@
+# Base de données générée
+*.db
+
+# Python
+__pycache__/
+*.pyc
