@@ -516,6 +516,65 @@ def import_distribution_precision(cursor, data_dir):
     return count
 
 
+def import_stats_utilisateurs_medicaments(cursor, data_dir):
+    """Importe Statistiques utilisateurs par médicaments (1).csv
+
+    Ce fichier a un format pivot avec 78918 colonnes d'en-tête mais seulement
+    7 colonnes de données par ligne. On le convertit en format long.
+    Colonnes: conteneur, dispositif, dosage, volume, job_id, date_heure
+    Le job_id permet de lier aux préparations existantes.
+    """
+    # Chercher le fichier (nom avec accents variables)
+    filepath = None
+    for f in os.listdir(data_dir):
+        if f.startswith("Statistiques utilisateurs par m") and f.endswith(".csv"):
+            filepath = os.path.join(data_dir, f)
+            break
+    if not filepath:
+        print(f"  SKIP: Statistiques utilisateurs par médicaments non trouvé")
+        return 0
+
+    rows = read_csv_file(filepath)
+    count = 0
+
+    # Aussi générer un CSV propre en format long
+    output_path = os.path.join(data_dir, "Stats_utilisateurs_medicaments_long.csv")
+    with open(output_path, 'w', newline='', encoding='utf-8') as out_f:
+        writer = csv.writer(out_f)
+        writer.writerow(["conteneur", "dispositif", "dosage", "volume", "job_id", "date_heure"])
+
+        for row in rows[1:]:
+            if len(row) < 6 or not row[4].strip():
+                continue
+            conteneur = row[0].strip()
+            dispositif = row[1].strip()
+            dosage = row[2].strip().replace('\xa0', ' ')
+            volume = row[3].strip()
+            job_id_str = row[4].strip()
+            date_heure = row[5].strip()
+
+            if not job_id_str.isdigit():
+                continue
+            job_id = int(job_id_str)
+
+            # Écrire dans le CSV propre
+            writer.writerow([conteneur, dispositif, dosage, volume, job_id, date_heure])
+
+            # Mettre à jour le conteneur dans la table preparations si manquant
+            if conteneur:
+                conteneur_id = get_or_create(cursor, "conteneurs", "nom", conteneur)
+                cursor.execute(
+                    """UPDATE preparations SET conteneur_id = ?
+                       WHERE job_id = ? AND (conteneur_id IS NULL)""",
+                    (conteneur_id, job_id)
+                )
+
+            count += 1
+
+    print(f"    -> CSV format long généré: {output_path}")
+    return count
+
+
 def main():
     parser = argparse.ArgumentParser(description="Import des CSV Apoteca vers SQLite")
     parser.add_argument("--db", default="apoteca.db", help="Chemin de la base SQLite (défaut: apoteca.db)")
@@ -559,6 +618,7 @@ def main():
         ("Composants utilisation", import_composants),
         ("Statistiques médicaments", import_statistiques_medicaments),
         ("Distribution précision dosage", import_distribution_precision),
+        ("Stats utilisateurs/médicaments (pivot→long)", import_stats_utilisateurs_medicaments),
     ]
 
     total = 0
