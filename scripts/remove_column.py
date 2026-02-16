@@ -10,7 +10,7 @@ Le fichier nettoyé est sauvegardé avec le suffixe '_cleaned'.
 import sys
 import os
 
-def remove_column(filepath, column_name="textbox24"):
+def remove_column(filepath, column_name="textBox24"):
     ext = os.path.splitext(filepath)[1].lower()
     base = os.path.splitext(filepath)[0]
 
