@@ -360,3 +360,68 @@ JOIN utilisateurs u ON pu.utilisateur_id = u.id
 WHERE pu.nb_preparations > 0
 GROUP BY mois, u.nom
 ORDER BY mois, u.nom;
+
+-- ============================================================
+-- 11. ANALYSE DOSE-TEMPS PAR MOLÉCULE
+-- ============================================================
+
+-- 11a. Données brutes dose vs temps de production (pour scatter/regression)
+SELECT
+    m.nom AS molecule,
+    p.dosage_mg,
+    CAST(substr(p.temps_production,1,2) AS INTEGER)*3600 +
+    CAST(substr(p.temps_production,4,2) AS INTEGER)*60 +
+    CAST(substr(p.temps_production,7,2) AS INTEGER) AS prod_sec
+FROM preparations p
+JOIN medicaments m ON p.medicament_id = m.id
+WHERE p.temps_production IS NOT NULL AND p.temps_production <> ''
+  AND p.dosage_mg IS NOT NULL
+ORDER BY m.nom, p.dosage_mg;
+
+-- ============================================================
+-- 12. ANALYSE DES SÉQUENCES DE PRODUCTION
+-- ============================================================
+
+-- 12a. Timeline avec estimation de l'heure de début
+SELECT
+    p.date_fin,
+    date(p.date_fin) AS jour,
+    m.nom AS molecule,
+    p.dosage_mg,
+    CAST(substr(p.temps_production,1,2) AS INTEGER)*3600 +
+    CAST(substr(p.temps_production,4,2) AS INTEGER)*60 +
+    CAST(substr(p.temps_production,7,2) AS INTEGER) AS prod_sec,
+    datetime(p.date_fin,
+        '-' || (CAST(substr(p.temps_production,1,2) AS INTEGER)*3600 +
+                CAST(substr(p.temps_production,4,2) AS INTEGER)*60 +
+                CAST(substr(p.temps_production,7,2) AS INTEGER)) || ' seconds'
+    ) AS date_debut_estimee
+FROM preparations p
+JOIN medicaments m ON p.medicament_id = m.id
+WHERE p.temps_production IS NOT NULL AND p.temps_production <> ''
+  AND p.date_fin IS NOT NULL
+ORDER BY p.date_fin;
+
+-- 12b. Mix de molécules (proportions pour simulation)
+SELECT
+    m.nom AS molecule,
+    COUNT(*) AS nb,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 1) AS pct
+FROM preparations p
+JOIN medicaments m ON p.medicament_id = m.id
+WHERE p.temps_production IS NOT NULL AND p.temps_production <> ''
+GROUP BY m.nom
+ORDER BY nb DESC;
+
+-- 12c. Statistiques de volume journalier
+SELECT
+    date(date_fin) AS jour,
+    CAST(strftime('%w', date_fin) AS INTEGER) AS jour_semaine,
+    COUNT(*) AS nb_preparations,
+    MIN(time(date_fin)) AS premiere,
+    MAX(time(date_fin)) AS derniere,
+    COUNT(DISTINCT medicament_id) AS nb_molecules
+FROM preparations
+WHERE date_fin IS NOT NULL
+GROUP BY jour
+ORDER BY jour;
