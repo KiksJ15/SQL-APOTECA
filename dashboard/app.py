@@ -5,12 +5,32 @@ Lance avec: streamlit run dashboard/app.py
 """
 
 import sqlite3
+import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+# Ajouter le dossier dashboard au path pour les imports simulation
+sys.path.insert(0, str(Path(__file__).parent))
+from simulation import (
+    compute_molecule_stats,
+    compute_dose_time_regression,
+    compute_dose_time_heatmap,
+    compute_correlation_table,
+    compute_inter_arrival_times,
+    estimate_start_times,
+    compute_batch_patterns,
+    compute_transition_matrix,
+    compute_hourly_rhythm,
+    fit_production_time_distribution,
+    fit_inter_arrival_distribution,
+    APOTECASimulator,
+    SimulationConfig,
+)
 
 # --- Configuration ---
 DB_PATH = Path(__file__).parent.parent / "apoteca.db"
@@ -88,13 +108,16 @@ if selected_meds:
 # ============================================================
 # TAB 1 - VUE D'ENSEMBLE
 # ============================================================
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "Vue d'ensemble",
     "Simulation journée",
     "Médicaments",
     "Qualité & Erreurs",
     "Productivité",
     "Stocks & Température",
+    "Temps par Molécule",
+    "Séquences de Production",
+    "Simulation DES",
 ])
 
 with tab1:
@@ -884,6 +907,629 @@ with tab6:
     """)
     if not nettoyages.empty:
         st.dataframe(nettoyages, width="stretch", hide_index=True)
+
+
+# ============================================================
+# TAB 7 - TEMPS PAR MOLÉCULE
+# ============================================================
+with tab7:
+    st.header("Analyse des temps de préparation par molécule")
+
+    # Requête brute : molecule, dosage_mg, prod_sec
+    @st.cache_data(ttl=300)
+    def load_dose_time_data(_d_start, _d_end, _selected_meds):
+        med_filter = ""
+        p = [str(_d_start), str(_d_end)]
+        if _selected_meds:
+            placeholders = ",".join(["?"] * len(_selected_meds))
+            med_filter = f" AND m.nom IN ({placeholders})"
+            p.extend(_selected_meds)
+
+        return query(f"""
+            SELECT
+                m.nom AS molecule,
+                p.dosage_mg,
+                CAST(substr(p.temps_production,1,2) AS INTEGER)*3600 +
+                CAST(substr(p.temps_production,4,2) AS INTEGER)*60 +
+                CAST(substr(p.temps_production,7,2) AS INTEGER) AS prod_sec
+            FROM preparations p
+            JOIN medicaments m ON p.medicament_id = m.id
+            WHERE p.temps_production IS NOT NULL AND p.temps_production <> ''
+              AND p.dosage_mg IS NOT NULL
+              AND date(p.date_fin) BETWEEN ? AND ?
+              {med_filter}
+        """, p)
+
+    dt_data = load_dose_time_data(d_start, d_end, tuple(selected_meds) if selected_meds else ())
+
+    if dt_data.empty:
+        st.warning("Aucune donnée de temps de production pour les filtres sélectionnés.")
+    else:
+        # --- KPIs globaux ---
+        mol_stats = compute_molecule_stats(dt_data)
+
+        avg_global = dt_data["prod_sec"].mean()
+        median_global = dt_data["prod_sec"].median()
+        fastest = mol_stats.loc[mol_stats["temps_median"].idxmin()]
+        slowest = mol_stats.loc[mol_stats["temps_median"].idxmax()]
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Temps prod. moyen", f"{int(avg_global // 60)}m {int(avg_global % 60)}s")
+        k2.metric("Temps prod. médian", f"{int(median_global // 60)}m {int(median_global % 60)}s")
+        k3.metric("Plus rapide (médian)", f"{fastest['molecule']}: {int(fastest['temps_median'])}s")
+        k4.metric("Plus lente (médian)", f"{slowest['molecule']}: {int(slowest['temps_median'])}s")
+
+        # --- Sélecteur de molécules dans le tab ---
+        top_molecules = mol_stats.head(15)["molecule"].tolist()
+        selected_tab7 = st.multiselect(
+            "Molécules à afficher (défaut: top 15 par volume)",
+            mol_stats["molecule"].tolist(),
+            default=top_molecules,
+            key="tab7_mol_select",
+        )
+
+        if selected_tab7:
+            filtered_stats = mol_stats[mol_stats["molecule"].isin(selected_tab7)]
+            filtered_data = dt_data[dt_data["molecule"].isin(selected_tab7)]
+
+            # --- Tableau de stats ---
+            st.subheader("Statistiques par molécule")
+            st.dataframe(
+                filtered_stats.rename(columns={
+                    "molecule": "Molécule",
+                    "count": "Nb preps",
+                    "dose_moy": "Dose moy. (mg)",
+                    "dose_min": "Dose min",
+                    "dose_max": "Dose max",
+                    "temps_moy": "T. moy (sec)",
+                    "temps_median": "T. médian (sec)",
+                    "temps_min": "T. min (sec)",
+                    "temps_max": "T. max (sec)",
+                    "temps_std": "Ecart-type (sec)",
+                }),
+                width="stretch", hide_index=True,
+            )
+
+            # --- Box plots ---
+            col_box, col_scatter_global = st.columns(2)
+
+            with col_box:
+                st.subheader("Distribution du temps de production")
+                fig_box = px.box(
+                    filtered_data, x="molecule", y="prod_sec",
+                    title="Temps de production par molécule",
+                    labels={"molecule": "", "prod_sec": "Temps (sec)"},
+                    color="molecule",
+                )
+                fig_box.update_layout(showlegend=False, xaxis_tickangle=-45)
+                st.plotly_chart(fig_box, width="stretch")
+
+            with col_scatter_global:
+                st.subheader("Dose vs Temps (toutes molécules)")
+                fig_global = px.scatter(
+                    filtered_data, x="dosage_mg", y="prod_sec",
+                    color="molecule",
+                    opacity=0.5,
+                    title="Corrélation dose-temps (global)",
+                    labels={"dosage_mg": "Dose (mg)", "prod_sec": "Temps prod. (sec)"},
+                    trendline="ols",
+                )
+                st.plotly_chart(fig_global, width="stretch")
+
+            # --- Scatter plots par molécule (top 6) ---
+            st.subheader("Dose vs Temps par molécule (détail)")
+            top6 = selected_tab7[:6]
+            cols_per_row = 3
+            for row_start in range(0, len(top6), cols_per_row):
+                cols = st.columns(cols_per_row)
+                for i, col in enumerate(cols):
+                    idx = row_start + i
+                    if idx >= len(top6):
+                        break
+                    mol = top6[idx]
+                    mol_data = filtered_data[filtered_data["molecule"] == mol]
+                    with col:
+                        reg = compute_dose_time_regression(dt_data, mol)
+                        title_suffix = f" (R²={reg['r_squared']:.3f})" if reg else ""
+                        fig_mol = px.scatter(
+                            mol_data, x="dosage_mg", y="prod_sec",
+                            title=f"{mol}{title_suffix}",
+                            labels={"dosage_mg": "Dose (mg)", "prod_sec": "Temps (sec)"},
+                            trendline="ols",
+                            color_discrete_sequence=["#1f77b4"],
+                        )
+                        fig_mol.update_layout(height=300)
+                        st.plotly_chart(fig_mol, width="stretch")
+
+            # --- Heatmap dose x molecule x temps ---
+            st.subheader("Heatmap : dose vs temps moyen par molécule")
+            heatmap_df = compute_dose_time_heatmap(dt_data, n_bins=5, min_count=10)
+            if not heatmap_df.empty:
+                fig_heat = px.imshow(
+                    heatmap_df,
+                    title="Temps de production moyen (sec) par plage de dose",
+                    labels=dict(x="Plage de dose", y="Molécule", color="Temps (sec)"),
+                    color_continuous_scale="YlOrRd",
+                    aspect="auto",
+                )
+                st.plotly_chart(fig_heat, width="stretch")
+            else:
+                st.info("Pas assez de données pour la heatmap.")
+
+            # --- Table de corrélations ---
+            with st.expander("Corrélations dose-temps (Pearson)"):
+                corr_table = compute_correlation_table(dt_data)
+                if not corr_table.empty:
+                    st.dataframe(
+                        corr_table.rename(columns={
+                            "molecule": "Molécule",
+                            "correlation": "Corrélation (r)",
+                            "p_value": "p-value",
+                            "n_samples": "N échantillons",
+                            "significatif": "Significatif (p<0.05)",
+                        }),
+                        width="stretch", hide_index=True,
+                    )
+                else:
+                    st.info("Pas assez de données pour les corrélations.")
+
+
+# ============================================================
+# TAB 8 - SÉQUENCES DE PRODUCTION
+# ============================================================
+with tab8:
+    st.header("Analyse des séquences de production")
+
+    # Requête pour données séquentielles
+    @st.cache_data(ttl=300)
+    def load_sequence_data(_d_start, _d_end, _selected_meds):
+        med_filter = ""
+        p = [str(_d_start), str(_d_end)]
+        if _selected_meds:
+            placeholders = ",".join(["?"] * len(_selected_meds))
+            med_filter = f" AND m.nom IN ({placeholders})"
+            p.extend(_selected_meds)
+
+        return query(f"""
+            SELECT
+                p.date_fin,
+                date(p.date_fin) AS jour,
+                m.nom AS molecule,
+                p.dosage_mg,
+                CAST(substr(p.temps_production,1,2) AS INTEGER)*3600 +
+                CAST(substr(p.temps_production,4,2) AS INTEGER)*60 +
+                CAST(substr(p.temps_production,7,2) AS INTEGER) AS prod_sec
+            FROM preparations p
+            JOIN medicaments m ON p.medicament_id = m.id
+            WHERE p.temps_production IS NOT NULL AND p.temps_production <> ''
+              AND p.date_fin IS NOT NULL
+              AND date(p.date_fin) BETWEEN ? AND ?
+              {med_filter}
+            ORDER BY p.date_fin
+        """, p)
+
+    seq_data = load_sequence_data(d_start, d_end, tuple(selected_meds) if selected_meds else ())
+
+    if seq_data.empty:
+        st.warning("Aucune donnée de séquence pour les filtres sélectionnés.")
+    else:
+        # --- Inter-arrivées ---
+        st.subheader("Temps inter-arrivées entre préparations")
+
+        seq_with_ia = compute_inter_arrival_times(seq_data)
+        ia_values = seq_with_ia["inter_arrival_sec"].dropna()
+        ia_positive = ia_values[ia_values > 0]
+
+        if not ia_positive.empty:
+            col_ia1, col_ia2 = st.columns([2, 1])
+
+            with col_ia1:
+                fig_ia = px.histogram(
+                    ia_positive, x=ia_positive,
+                    nbins=50,
+                    title="Distribution des temps inter-arrivées",
+                    labels={"x": "Temps inter-arrivée (sec)", "count": "Fréquence"},
+                    color_discrete_sequence=["#1f77b4"],
+                )
+                fig_ia.update_layout(xaxis_range=[0, min(ia_positive.quantile(0.95), 3600)])
+                st.plotly_chart(fig_ia, width="stretch")
+
+            with col_ia2:
+                ia_fit = fit_inter_arrival_distribution(ia_positive.values)
+                st.metric("Moyenne", f"{ia_positive.mean():.0f} sec ({ia_positive.mean()/60:.1f} min)")
+                st.metric("Médiane", f"{ia_positive.median():.0f} sec")
+                st.metric("Écart-type", f"{ia_positive.std():.0f} sec")
+                st.metric("Distribution fittée", ia_fit.get("name", "N/A"))
+                if ia_fit.get("ks_statistic"):
+                    st.metric("KS statistic", f"{ia_fit['ks_statistic']:.4f}")
+
+        # --- Rythme journalier ---
+        st.subheader("Rythme journalier de production")
+
+        col_rhythm1, col_rhythm2 = st.columns(2)
+
+        with col_rhythm1:
+            hourly = compute_hourly_rhythm(seq_data)
+            fig_rhythm = px.bar(
+                hourly, x="heure", y="nb_moyen",
+                error_y="nb_std",
+                title="Nombre moyen de préparations par heure",
+                labels={"heure": "Heure", "nb_moyen": "Preps/heure (moy)"},
+                color_discrete_sequence=["#2ca02c"],
+            )
+            st.plotly_chart(fig_rhythm, width="stretch")
+
+        with col_rhythm2:
+            # Volume journalier par jour de semaine
+            daily_counts = seq_data.groupby("jour").size().reset_index(name="nb")
+            daily_counts["jour_dt"] = pd.to_datetime(daily_counts["jour"])
+            daily_counts["jour_sem"] = daily_counts["jour_dt"].dt.day_name()
+            jour_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            daily_counts["jour_sem"] = pd.Categorical(daily_counts["jour_sem"], categories=jour_order, ordered=True)
+            fig_weekday = px.box(
+                daily_counts.sort_values("jour_sem"), x="jour_sem", y="nb",
+                title="Volume journalier par jour de semaine",
+                labels={"jour_sem": "", "nb": "Préparations/jour"},
+                color_discrete_sequence=["#ff7f0e"],
+            )
+            st.plotly_chart(fig_weekday, width="stretch")
+
+        # --- Batches ---
+        st.subheader("Patterns de batch (séries consécutives)")
+
+        batches = compute_batch_patterns(seq_data)
+        if not batches.empty:
+            col_batch1, col_batch2 = st.columns(2)
+
+            with col_batch1:
+                fig_batch_dist = px.histogram(
+                    batches, x="batch_size",
+                    title="Distribution des tailles de batch",
+                    labels={"batch_size": "Taille du batch", "count": "Fréquence"},
+                    color_discrete_sequence=["#9467bd"],
+                    nbins=int(max(batches["batch_size"].max(), 10)),
+                )
+                st.plotly_chart(fig_batch_dist, width="stretch")
+
+            with col_batch2:
+                batch_avg = batches.groupby("molecule").agg(
+                    taille_moy=("batch_size", "mean"),
+                    nb_batches=("batch_size", "size"),
+                ).sort_values("taille_moy", ascending=False).head(15).reset_index()
+                batch_avg["taille_moy"] = batch_avg["taille_moy"].round(1)
+
+                fig_batch_mol = px.bar(
+                    batch_avg, x="taille_moy", y="molecule",
+                    orientation="h",
+                    title="Taille moyenne de batch par molécule (top 15)",
+                    labels={"taille_moy": "Taille moy.", "molecule": ""},
+                    color="nb_batches",
+                    color_continuous_scale="Viridis",
+                )
+                fig_batch_mol.update_layout(yaxis=dict(autorange="reversed"))
+                st.plotly_chart(fig_batch_mol, width="stretch")
+
+        # --- Matrice de transition ---
+        st.subheader("Matrice de transition entre molécules")
+
+        n_mol_transition = st.slider(
+            "Nombre de molécules pour la matrice", 5, 20, 12, key="transition_slider"
+        )
+        trans_matrix = compute_transition_matrix(seq_data, top_n=n_mol_transition)
+
+        if not trans_matrix.empty:
+            fig_trans = px.imshow(
+                trans_matrix,
+                title=f"P(suivant | courant) - Top {n_mol_transition} molécules",
+                labels=dict(x="Molécule suivante", y="Molécule courante", color="Probabilité"),
+                color_continuous_scale="Blues",
+                aspect="auto",
+            )
+            fig_trans.update_layout(height=500)
+            st.plotly_chart(fig_trans, width="stretch")
+
+            st.caption(
+                "Lecture : chaque ligne somme à 1.0. Les valeurs sur la diagonale "
+                "indiquent les auto-transitions (même molécule préparée consécutivement)."
+            )
+        else:
+            st.info("Pas assez de données pour la matrice de transition.")
+
+        # --- Distributions fittées des temps de production ---
+        st.subheader("Distributions des temps de production par molécule")
+        top_mols_fit = seq_data["molecule"].value_counts().head(8).index.tolist()
+
+        fit_results = []
+        cols_per_row = 4
+        for row_start in range(0, len(top_mols_fit), cols_per_row):
+            cols = st.columns(cols_per_row)
+            for i, col in enumerate(cols):
+                idx = row_start + i
+                if idx >= len(top_mols_fit):
+                    break
+                mol = top_mols_fit[idx]
+                mol_times = seq_data[seq_data["molecule"] == mol]["prod_sec"].dropna().values
+                fit = fit_production_time_distribution(mol_times)
+                fit_results.append({"molecule": mol, **fit})
+
+                with col:
+                    fig_fit = px.histogram(
+                        x=mol_times, nbins=30,
+                        title=f"{mol} ({fit.get('name', 'N/A')})",
+                        labels={"x": "Temps (sec)", "count": ""},
+                        color_discrete_sequence=["#17becf"],
+                    )
+                    fig_fit.update_layout(height=250, showlegend=False)
+                    st.plotly_chart(fig_fit, width="stretch")
+
+        with st.expander("Paramètres des distributions fittées"):
+            fit_df = pd.DataFrame(fit_results)
+            if not fit_df.empty:
+                display_cols = ["molecule", "name", "mean", "std", "ks_statistic", "p_value"]
+                available = [c for c in display_cols if c in fit_df.columns]
+                st.dataframe(
+                    fit_df[available].rename(columns={
+                        "molecule": "Molécule",
+                        "name": "Distribution",
+                        "mean": "Moyenne (sec)",
+                        "std": "Écart-type (sec)",
+                        "ks_statistic": "KS stat",
+                        "p_value": "p-value",
+                    }),
+                    width="stretch", hide_index=True,
+                )
+
+
+# ============================================================
+# TAB 9 - SIMULATION DES
+# ============================================================
+with tab9:
+    st.header("Simulation à Événements Discrets (DES)")
+    st.caption(
+        "Simule une journée de production du robot APOTECA en utilisant "
+        "les distributions statistiques fittées sur les données historiques."
+    )
+
+    # Charger les données pour le simulateur
+    @st.cache_data(ttl=300)
+    def load_sim_historical(_d_start, _d_end):
+        return query("""
+            SELECT
+                p.date_fin,
+                date(p.date_fin) AS jour,
+                m.nom AS molecule,
+                p.dosage_mg,
+                CAST(substr(p.temps_production,1,2) AS INTEGER)*3600 +
+                CAST(substr(p.temps_production,4,2) AS INTEGER)*60 +
+                CAST(substr(p.temps_production,7,2) AS INTEGER) AS prod_sec
+            FROM preparations p
+            JOIN medicaments m ON p.medicament_id = m.id
+            WHERE p.temps_production IS NOT NULL AND p.temps_production <> ''
+              AND p.date_fin IS NOT NULL
+              AND date(p.date_fin) BETWEEN ? AND ?
+            ORDER BY p.date_fin
+        """, [str(_d_start), str(_d_end)])
+
+    sim_hist = load_sim_historical(d_start, d_end)
+
+    if sim_hist.empty:
+        st.warning("Pas assez de données historiques pour la simulation.")
+    else:
+        # Construire le simulateur
+        @st.cache_resource
+        def build_simulator(_data_hash):
+            return APOTECASimulator.from_historical_data(sim_hist)
+
+        data_hash = hash(sim_hist.to_json())
+        simulator = build_simulator(data_hash)
+
+        # Calculer les stats historiques
+        daily_counts = sim_hist.groupby("jour").size()
+        avg_daily = int(daily_counts.mean())
+        max_daily = int(daily_counts.max())
+
+        # --- Contrôles ---
+        st.subheader("Paramètres de simulation")
+
+        col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns(4)
+        with col_ctrl1:
+            n_preps = st.slider(
+                "Nombre de préparations",
+                min_value=10, max_value=150, value=avg_daily,
+                help=f"Historique : moy={avg_daily}, max={max_daily}",
+            )
+        with col_ctrl2:
+            n_robots = st.selectbox("Nombre de robots", [1, 2, 3], index=0)
+        with col_ctrl3:
+            start_hour = st.time_input("Heure de début", value=pd.Timestamp("09:00").time())
+            start_h = start_hour.hour + start_hour.minute / 60
+        with col_ctrl4:
+            volume_factor = st.slider("Facteur de volume", 0.5, 3.0, 1.0, 0.1)
+
+        col_seed, col_run = st.columns([1, 1])
+        with col_seed:
+            random_seed = st.number_input("Seed aléatoire", value=42, min_value=0, max_value=99999)
+        with col_run:
+            st.write("")  # spacer
+            st.write("")
+            run_sim = st.button("Lancer la simulation", type="primary", use_container_width=True)
+
+        # --- Scénarios pré-configurés ---
+        st.subheader("Scénarios rapides")
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        scenario = None
+        with sc1:
+            if st.button("Journée standard", use_container_width=True):
+                scenario = SimulationConfig(n_preparations=avg_daily, n_robots=1, start_time_hour=9.0, random_seed=random_seed)
+        with sc2:
+            if st.button("+20% volume", use_container_width=True):
+                scenario = SimulationConfig(n_preparations=avg_daily, volume_factor=1.2, n_robots=1, start_time_hour=9.0, random_seed=random_seed)
+        with sc3:
+            if st.button("+50% volume", use_container_width=True):
+                scenario = SimulationConfig(n_preparations=avg_daily, volume_factor=1.5, n_robots=1, start_time_hour=9.0, random_seed=random_seed)
+        with sc4:
+            if st.button("2 robots", use_container_width=True):
+                scenario = SimulationConfig(n_preparations=avg_daily, n_robots=2, start_time_hour=9.0, random_seed=random_seed)
+
+        # Déterminer la config à utiliser
+        config = None
+        if run_sim:
+            config = SimulationConfig(
+                n_preparations=n_preps,
+                n_robots=n_robots,
+                start_time_hour=start_h,
+                volume_factor=volume_factor,
+                random_seed=int(random_seed),
+            )
+        elif scenario:
+            config = scenario
+
+        if config is not None:
+            # Exécuter la simulation
+            results = simulator.run(config)
+            sim_df = APOTECASimulator.to_dataframe(results)
+            metrics = APOTECASimulator.compute_metrics(sim_df)
+
+            # --- KPIs de la simulation ---
+            st.subheader("Résultats de la simulation")
+
+            mk1, mk2, mk3, mk4, mk5 = st.columns(5)
+            mk1.metric("Préparations", metrics.get("n_preparations", 0))
+            mk2.metric("Durée totale", f"{metrics.get('duree_totale_min', 0):.0f} min")
+            mk3.metric("Débit", f"{metrics.get('debit_preps_heure', 0):.1f} preps/h")
+            mk4.metric("Utilisation robot", f"{metrics.get('taux_utilisation_pct', 0):.1f}%")
+            mk5.metric("Attente moyenne", f"{metrics.get('temps_attente_moyen_sec', 0):.0f} sec")
+
+            # --- Gantt chart ---
+            st.subheader("Timeline de production (Gantt)")
+
+            # Créer les données pour le Gantt
+            gantt_data = sim_df.copy()
+            ref_date = pd.Timestamp("2025-01-01")
+            gantt_data["Start"] = ref_date + pd.to_timedelta(gantt_data["start_time"], unit="s")
+            gantt_data["End"] = ref_date + pd.to_timedelta(gantt_data["end_time"], unit="s")
+            gantt_data["Robot"] = gantt_data["robot_id"].apply(lambda x: f"Robot {x + 1}")
+
+            fig_gantt = px.timeline(
+                gantt_data,
+                x_start="Start", x_end="End",
+                y="Robot", color="molecule",
+                title="Timeline simulée de production",
+                labels={"molecule": "Molécule"},
+                hover_data=["dose_mg", "production_time"],
+            )
+            fig_gantt.update_layout(
+                xaxis_title="Heure",
+                yaxis_title="",
+                height=200 + 100 * config.n_robots,
+                xaxis=dict(tickformat="%H:%M"),
+            )
+            st.plotly_chart(fig_gantt, width="stretch")
+
+            # --- Courbe de débit ---
+            col_debit, col_compare = st.columns(2)
+
+            with col_debit:
+                sim_df["heure"] = (sim_df["end_time"] // 3600).astype(int)
+                sim_hourly = sim_df.groupby("heure").size().reset_index(name="nb_sim")
+
+                # Historique horaire
+                hist_hourly = compute_hourly_rhythm(sim_hist)
+
+                fig_debit = go.Figure()
+                fig_debit.add_trace(go.Bar(
+                    x=sim_hourly["heure"], y=sim_hourly["nb_sim"],
+                    name="Simulation", marker_color="#ff7f0e",
+                ))
+                if not hist_hourly.empty:
+                    fig_debit.add_trace(go.Scatter(
+                        x=hist_hourly["heure"], y=hist_hourly["nb_moyen"],
+                        name="Historique (moy)", mode="lines+markers",
+                        line=dict(color="#1f77b4", width=2),
+                    ))
+                fig_debit.update_layout(
+                    title="Débit horaire : simulation vs historique",
+                    xaxis_title="Heure",
+                    yaxis_title="Préparations",
+                    barmode="group",
+                )
+                st.plotly_chart(fig_debit, width="stretch")
+
+            with col_compare:
+                # Tableau de comparaison
+                comparison = APOTECASimulator.compare_with_historical(metrics, sim_hist)
+                st.subheader("Comparaison simulation vs historique")
+                st.dataframe(comparison, width="stretch", hide_index=True)
+
+            # --- Distribution des molécules simulées ---
+            with st.expander("Détail de la simulation"):
+                col_detail1, col_detail2 = st.columns(2)
+                with col_detail1:
+                    mol_sim_counts = sim_df["molecule"].value_counts().reset_index()
+                    mol_sim_counts.columns = ["molecule", "nb"]
+                    fig_mol_sim = px.pie(
+                        mol_sim_counts.head(15), names="molecule", values="nb",
+                        title="Répartition des molécules simulées",
+                    )
+                    st.plotly_chart(fig_mol_sim, width="stretch")
+
+                with col_detail2:
+                    fig_wait = px.histogram(
+                        sim_df, x="wait_time",
+                        title="Distribution des temps d'attente",
+                        labels={"wait_time": "Temps d'attente (sec)"},
+                        color_discrete_sequence=["#d62728"],
+                    )
+                    st.plotly_chart(fig_wait, width="stretch")
+
+                st.dataframe(
+                    sim_df[["prep_id", "molecule", "dose_mg", "start_time_str",
+                            "end_time_str", "production_time", "wait_time", "robot_id"]].rename(columns={
+                        "prep_id": "#",
+                        "molecule": "Molécule",
+                        "dose_mg": "Dose (mg)",
+                        "start_time_str": "Début",
+                        "end_time_str": "Fin",
+                        "production_time": "T. prod (sec)",
+                        "wait_time": "Attente (sec)",
+                        "robot_id": "Robot",
+                    }),
+                    width="stretch", hide_index=True,
+                )
+
+        # --- Comparaison multi-scénarios ---
+        st.subheader("Comparaison multi-scénarios")
+        if st.button("Lancer la comparaison (4 scénarios)", key="multi_scenario"):
+            scenarios = {
+                "Standard": SimulationConfig(n_preparations=avg_daily, n_robots=1, start_time_hour=9.0, random_seed=int(random_seed)),
+                "+20% vol.": SimulationConfig(n_preparations=avg_daily, volume_factor=1.2, n_robots=1, start_time_hour=9.0, random_seed=int(random_seed)),
+                "+50% vol.": SimulationConfig(n_preparations=avg_daily, volume_factor=1.5, n_robots=1, start_time_hour=9.0, random_seed=int(random_seed)),
+                "2 robots": SimulationConfig(n_preparations=avg_daily, n_robots=2, start_time_hour=9.0, random_seed=int(random_seed)),
+            }
+
+            scenario_metrics = []
+            for name, sc_config in scenarios.items():
+                sc_results = simulator.run(sc_config)
+                sc_df = APOTECASimulator.to_dataframe(sc_results)
+                sc_metrics = APOTECASimulator.compute_metrics(sc_df)
+                sc_metrics["Scénario"] = name
+                scenario_metrics.append(sc_metrics)
+
+            compare_df = pd.DataFrame(scenario_metrics)
+            display_cols = {
+                "Scénario": "Scénario",
+                "n_preparations": "Préparations",
+                "duree_totale_min": "Durée (min)",
+                "debit_preps_heure": "Débit (preps/h)",
+                "taux_utilisation_pct": "Utilisation (%)",
+                "temps_attente_moyen_sec": "Attente moy. (sec)",
+                "n_robots": "Robots",
+            }
+            available_cols = [c for c in display_cols.keys() if c in compare_df.columns]
+            st.dataframe(
+                compare_df[available_cols].rename(columns=display_cols),
+                width="stretch", hide_index=True,
+            )
 
 
 # ============================================================

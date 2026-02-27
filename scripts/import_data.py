@@ -629,6 +629,21 @@ def main():
     with open(schema_path, 'r') as f:
         cursor.executescript(f.read())
 
+    # Vider les tables avant import pour éviter les doublons si relancé
+    tables_to_clear = [
+        "distribution_precision_dosage", "statistiques_medicaments",
+        "composants_utilisation", "utilisation_medicaments",
+        "performance_journaliere", "productivite_utilisateurs",
+        "taches_nettoyage", "temperatures", "erreurs", "preparations",
+        "activite_utilisateurs",
+    ]
+    for table in tables_to_clear:
+        cursor.execute(f"DELETE FROM {table}")
+    # Vider aussi les tables de référence (elles seront recréées par get_or_create)
+    for table in ["conteneurs", "services", "medicaments", "utilisateurs", "dispositifs"]:
+        cursor.execute(f"DELETE FROM {table}")
+    print("Tables vidées avant import.\n")
+
     # Import de chaque fichier
     importers = [
         ("Activité utilisateurs", import_activite_utilisateurs),
