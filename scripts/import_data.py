@@ -149,19 +149,29 @@ def import_activite_utilisateurs(cursor, data_dir):
 
 
 def import_process_step_time(cursor, data_dir):
-    """Importe Process Step Time.csv (version originale avec toutes les colonnes)"""
-    # Utiliser le fichier original (26 colonnes, label-value alternées)
+    """Importe Process Step Time.csv ou Process Step Time_cleaned.csv"""
     filepath = os.path.join(data_dir, "Process Step Time.csv")
-    if not os.path.exists(filepath):
+    cleaned_filepath = os.path.join(data_dir, "Process Step Time_cleaned.csv")
+    if os.path.exists(filepath):
+        use_cleaned = False
+    elif os.path.exists(cleaned_filepath):
+        filepath = cleaned_filepath
+        use_cleaned = True
+    else:
         print(f"  SKIP: Process Step Time non trouvé")
         return 0
 
     rows = read_csv_file(filepath)
     count = 0
     for row in rows[1:]:
-        if len(row) < 26 or not row[1].strip():
-            continue
-        # Colonnes: 13 paires label/valeur = 26 colonnes
+        # Cleaned = 25 colonnes (patient anonymisé), Original = 26 colonnes
+        if use_cleaned:
+            if len(row) < 25 or not row[1].strip():
+                continue
+        else:
+            if len(row) < 26 or not row[1].strip():
+                continue
+
         job_id_str = row[1].strip()
         if not job_id_str.isdigit():
             continue
@@ -169,15 +179,29 @@ def import_process_step_time(cursor, data_dir):
         external_id = row[3].strip()
         date_fin = parse_date_fr(row[5])
         dispositif = row[7].strip()
-        patient = row[9].strip()
-        patient_code = row[11].strip()
-        medicament = row[13].strip()
-        dosage_brut = row[15].strip()
-        conteneur = row[17].strip()
-        confirmation = row[19].strip()
-        queue = row[21].strip()
-        production = row[23].strip()
-        final_check = row[25].strip()
+
+        if use_cleaned:
+            # Cleaned: 25 cols - col 8 = "Patient" (label anonymisé)
+            patient = row[8].strip()
+            patient_code = row[10].strip()
+            medicament = row[12].strip()
+            dosage_brut = row[14].strip()
+            conteneur = row[16].strip()
+            confirmation = row[18].strip()
+            queue = row[20].strip()
+            production = row[22].strip()
+            final_check = row[24].strip()
+        else:
+            # Original: 26 cols
+            patient = row[9].strip()
+            patient_code = row[11].strip()
+            medicament = row[13].strip()
+            dosage_brut = row[15].strip()
+            conteneur = row[17].strip()
+            confirmation = row[19].strip()
+            queue = row[21].strip()
+            production = row[23].strip()
+            final_check = row[25].strip()
 
         dosage_mg = parse_decimal_fr(dosage_brut)
         dispositif_id = get_or_create(cursor, "dispositifs", "nom", dispositif)
@@ -209,14 +233,14 @@ def import_erreurs(cursor, data_dir):
     rows = read_csv_file(filepath)
     count = 0
     for row in rows[1:]:
-        if len(row) < 11 or not row[1].strip():
+        if len(row) < 11 or not row[2].strip():
             continue
-        # label, value alternées
-        date_heure = parse_date_fr(row[1].strip())
-        dispositif = row[3].strip()
-        message = row[5].strip()
-        description = row[7].strip()
-        utilisateur = row[9].strip()
+        # 11 colonnes: Type, Date(label), datetime, Device(label), device, Message(label), msg, Description(label), desc, Utilisateur(label), user
+        date_heure = parse_date_fr(row[2].strip())
+        dispositif = row[4].strip()
+        message = row[6].strip()
+        description = row[8].strip()
+        utilisateur = row[10].strip()
 
         dispositif_id = get_or_create(cursor, "dispositifs", "nom", dispositif)
         utilisateur_id = get_or_create(cursor, "utilisateurs", "nom", utilisateur)
