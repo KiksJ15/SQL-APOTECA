@@ -401,14 +401,30 @@ with tab4:
         """)
 
         if not erreurs.empty:
-            fig_err = px.pie(
-                erreurs, names="type_erreur", values="nb",
-                title="Types d'erreurs",
-                color_discrete_sequence=px.colors.qualitative.Set2,
+            # Raccourcir les labels pour le camembert
+            erreurs["label"] = erreurs["type_erreur"].str[:50].where(
+                erreurs["type_erreur"].str.len() <= 50,
+                erreurs["type_erreur"].str[:50] + "...",
             )
+            fig_err = px.bar(
+                erreurs, x="nb", y="label",
+                orientation="h",
+                title="Types d'erreurs",
+                labels={"nb": "Nombre", "label": ""},
+                color="nb",
+                color_continuous_scale="Reds",
+            )
+            fig_err.update_layout(yaxis=dict(autorange="reversed"), showlegend=False)
             st.plotly_chart(fig_err, width="stretch")
 
-            st.dataframe(erreurs, width="stretch", hide_index=True)
+            st.dataframe(
+                erreurs[["type_erreur", "nb", "details"]].rename(columns={
+                    "type_erreur": "Type d'erreur",
+                    "nb": "Nombre",
+                    "details": "Détails",
+                }),
+                width="stretch", hide_index=True,
+            )
 
     # Taux d'erreur global
     nb_err = query("SELECT COUNT(*) AS n FROM erreurs")["n"][0]
@@ -484,13 +500,11 @@ with tab5:
 
     if not prod_time.empty:
         prod_time["date"] = pd.to_datetime(prod_time["date"])
-        fig_prod = px.scatter(
+        fig_prod = px.line(
             prod_time, x="date", y="preparations_par_heure",
             color="operateur",
-            size="nb_preparations",
             title="Évolution de la productivité par opérateur",
             labels={"date": "Date", "preparations_par_heure": "Preps/heure", "operateur": "Opérateur"},
-            trendline="lowess",
         )
         st.plotly_chart(fig_prod, width="stretch")
 
@@ -620,6 +634,125 @@ with tab6:
         )
         st.plotly_chart(fig_evol, width="stretch")
 
+    # --- Consommation dispositifs (poches, seringues, etc.) ---
+    st.subheader("Consommation de dispositifs (poches, seringues)")
+
+    conteneurs_usage = query(f"""
+        SELECT
+            c.nom AS conteneur,
+            COUNT(*) AS nb_utilises
+        FROM preparations p
+        JOIN conteneurs c ON p.conteneur_id = c.id
+        JOIN medicaments m ON p.medicament_id = m.id
+        {where}
+        GROUP BY c.nom
+        ORDER BY nb_utilises DESC
+    """, params)
+
+    if not conteneurs_usage.empty:
+        col_disp1, col_disp2 = st.columns(2)
+        with col_disp1:
+            fig_cont = px.bar(
+                conteneurs_usage, x="nb_utilises", y="conteneur",
+                orientation="h",
+                title="Conteneurs utilisés (total)",
+                labels={"nb_utilises": "Nombre", "conteneur": ""},
+                color_discrete_sequence=["#17becf"],
+            )
+            fig_cont.update_layout(yaxis=dict(autorange="reversed"))
+            st.plotly_chart(fig_cont, width="stretch")
+
+        with col_disp2:
+            fig_cont_pie = px.pie(
+                conteneurs_usage, names="conteneur", values="nb_utilises",
+                title="Répartition des conteneurs",
+            )
+            fig_cont_pie.update_traces(textposition="inside", textinfo="percent+label")
+            fig_cont_pie.update_layout(showlegend=False)
+            st.plotly_chart(fig_cont_pie, width="stretch")
+
+    # Évolution mensuelle des conteneurs
+    conteneurs_mois = query(f"""
+        SELECT
+            strftime('%Y-%m', p.date_fin) AS mois,
+            c.nom AS conteneur,
+            COUNT(*) AS nb
+        FROM preparations p
+        JOIN conteneurs c ON p.conteneur_id = c.id
+        JOIN medicaments m ON p.medicament_id = m.id
+        {where}
+        GROUP BY mois, c.nom
+        ORDER BY mois
+    """, params)
+
+    if not conteneurs_mois.empty:
+        # Top 5 conteneurs pour lisibilité
+        top5_cont = conteneurs_usage["conteneur"].head(5).tolist()
+        cont_top5 = conteneurs_mois[conteneurs_mois["conteneur"].isin(top5_cont)]
+        fig_cont_evol = px.line(
+            cont_top5, x="mois", y="nb",
+            color="conteneur",
+            title="Évolution mensuelle des conteneurs (Top 5)",
+            labels={"mois": "Mois", "nb": "Nombre", "conteneur": "Conteneur"},
+            markers=True,
+        )
+        st.plotly_chart(fig_cont_evol, width="stretch")
+
+    # Composants consommés - séparés entre captifs et chimiothérapies
+    composants = query("""
+        SELECT m.nom_complet AS composant, cu.quantite
+        FROM composants_utilisation cu
+        JOIN medicaments m ON cu.medicament_id = m.id
+        ORDER BY cu.quantite DESC
+    """)
+
+    if not composants.empty:
+        # Classification : captifs = poches, seringues, aiguilles, eau PPI
+        motifs_captifs = ["POCHE", "SYRINGE", "NaCl", "Glucose", "EAU PPI", "NEEDLE", "PUMP", "FOLFUSOR"]
+        composants["type"] = composants["composant"].apply(
+            lambda x: "Captif" if any(m in x.upper() for m in [s.upper() for s in motifs_captifs]) else "Chimiothérapie"
+        )
+
+        captifs = composants[composants["type"] == "Captif"].copy()
+        chimios = composants[composants["type"] == "Chimiothérapie"].copy()
+
+        st.subheader("Composants consommés")
+        col_cap, col_chi = st.columns(2)
+
+        with col_cap:
+            if not captifs.empty:
+                fig_cap = px.bar(
+                    captifs, x="quantite", y="composant",
+                    orientation="h",
+                    title="Captifs (poches, seringues, aiguilles)",
+                    labels={"quantite": "Quantité", "composant": ""},
+                    color_discrete_sequence=["#17becf"],
+                )
+                fig_cap.update_layout(yaxis=dict(autorange="reversed"))
+                st.plotly_chart(fig_cap, width="stretch")
+
+        with col_chi:
+            if not chimios.empty:
+                fig_chi = px.bar(
+                    chimios, x="quantite", y="composant",
+                    orientation="h",
+                    title="Flacons de chimiothérapie",
+                    labels={"quantite": "Quantité", "composant": ""},
+                    color_discrete_sequence=["#e377c2"],
+                )
+                fig_chi.update_layout(yaxis=dict(autorange="reversed"))
+                st.plotly_chart(fig_chi, width="stretch")
+
+        with st.expander("Tableau complet des composants"):
+            st.dataframe(
+                composants[["composant", "quantite", "type"]].rename(columns={
+                    "composant": "Composant",
+                    "quantite": "Quantité",
+                    "type": "Type",
+                }),
+                width="stretch", hide_index=True,
+            )
+
     # --- Consommation par service ---
     st.subheader("Consommation par service hospitalier")
     conso_service = query("""
@@ -674,66 +807,43 @@ with tab6:
     # --- État des stocks et péremption ---
     st.subheader("État des stocks et dates de péremption")
 
-    col_s1, col_s2 = st.columns(2)
+    stocks = query("""
+        SELECT
+            m.nom AS medicament,
+            sm.lot,
+            sm.quantite_totale AS quantite,
+            sm.date_expiration,
+            CASE
+                WHEN sm.date_expiration < date('now') THEN 'EXPIRÉ'
+                WHEN sm.date_expiration < date('now', '+90 days') THEN 'EXPIRE BIENTÔT'
+                ELSE 'OK'
+            END AS statut
+        FROM statistiques_medicaments sm
+        JOIN medicaments m ON sm.medicament_id = m.id
+        WHERE sm.date_expiration IS NOT NULL
+        ORDER BY sm.date_expiration
+    """)
 
-    with col_s1:
-        stocks = query("""
-            SELECT
-                m.nom AS medicament,
-                sm.lot,
-                sm.quantite_totale AS quantite,
-                sm.date_expiration,
-                CASE
-                    WHEN sm.date_expiration < date('now') THEN 'EXPIRÉ'
-                    WHEN sm.date_expiration < date('now', '+90 days') THEN 'EXPIRE BIENTÔT'
-                    ELSE 'OK'
-                END AS statut
-            FROM statistiques_medicaments sm
-            JOIN medicaments m ON sm.medicament_id = m.id
-            WHERE sm.date_expiration IS NOT NULL
-            ORDER BY sm.date_expiration
-        """)
+    if not stocks.empty:
+        def color_status(val):
+            if val == "EXPIRÉ":
+                return "background-color: #ffcccc"
+            elif val == "EXPIRE BIENTÔT":
+                return "background-color: #fff3cd"
+            return "background-color: #d4edda"
 
-        if not stocks.empty:
-            def color_status(val):
-                if val == "EXPIRÉ":
-                    return "background-color: #ffcccc"
-                elif val == "EXPIRE BIENTÔT":
-                    return "background-color: #fff3cd"
-                return "background-color: #d4edda"
+        styled = stocks.style.map(color_status, subset=["statut"])
+        st.dataframe(styled, width="stretch", hide_index=True)
 
-            styled = stocks.style.map(color_status, subset=["statut"])
-            st.dataframe(styled, width="stretch", hide_index=True)
-
-            nb_expired = len(stocks[stocks["statut"] == "EXPIRÉ"])
-            nb_soon = len(stocks[stocks["statut"] == "EXPIRE BIENTÔT"])
-            nb_ok = len(stocks[stocks["statut"] == "OK"])
-            if nb_expired > 0:
-                st.error(f"{nb_expired} lot(s) expiré(s)")
-            if nb_soon > 0:
-                st.warning(f"{nb_soon} lot(s) expire(nt) dans moins de 90 jours")
-            if nb_ok > 0 and nb_expired == 0 and nb_soon == 0:
-                st.success(f"Tous les {nb_ok} lots sont en date")
-
-    with col_s2:
-        # Composants utilisation (flacons consommés)
-        composants = query("""
-            SELECT m.nom AS medicament, cu.quantite AS flacons_utilises
-            FROM composants_utilisation cu
-            JOIN medicaments m ON cu.medicament_id = m.id
-            ORDER BY cu.quantite DESC
-        """)
-
-        if not composants.empty:
-            fig_comp = px.bar(
-                composants.head(15), x="flacons_utilises", y="medicament",
-                orientation="h",
-                title="Flacons consommés par médicament",
-                labels={"flacons_utilises": "Flacons", "medicament": ""},
-                color_discrete_sequence=["#e377c2"],
-            )
-            fig_comp.update_layout(yaxis=dict(autorange="reversed"))
-            st.plotly_chart(fig_comp, width="stretch")
+        nb_expired = len(stocks[stocks["statut"] == "EXPIRÉ"])
+        nb_soon = len(stocks[stocks["statut"] == "EXPIRE BIENTÔT"])
+        nb_ok = len(stocks[stocks["statut"] == "OK"])
+        if nb_expired > 0:
+            st.error(f"{nb_expired} lot(s) expiré(s)")
+        if nb_soon > 0:
+            st.warning(f"{nb_soon} lot(s) expire(nt) dans moins de 90 jours")
+        if nb_ok > 0 and nb_expired == 0 and nb_soon == 0:
+            st.success(f"Tous les {nb_ok} lots sont en date")
 
     # --- Température ---
     st.subheader("Température de la chambre robot")
