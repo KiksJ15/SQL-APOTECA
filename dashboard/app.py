@@ -394,7 +394,7 @@ with tab4:
         st.subheader("Erreurs du robot")
         erreurs = query("""
             SELECT message AS type_erreur, COUNT(*) AS nb,
-                   GROUP_CONCAT(DISTINCT description, ' | ') AS details
+                   GROUP_CONCAT(description, ' | ') AS details
             FROM erreurs
             GROUP BY message
             ORDER BY nb DESC
@@ -557,39 +557,125 @@ with tab5:
 # TAB 6 - STOCKS & TEMPÉRATURE
 # ============================================================
 with tab6:
-    st.header("Stocks et monitoring environnemental")
+    st.header("Stocks, Consommation & Monitoring")
+
+    # --- Consommation de stock par médicament et par mois ---
+    st.subheader("Consommation de stock par médicament")
+
+    conso_mensuelle = query(f"""
+        SELECT
+            m.nom AS medicament,
+            strftime('%Y-%m', p.date_fin) AS mois,
+            COUNT(*) AS nb_preparations,
+            ROUND(SUM(p.dosage_mg), 1) AS consommation_mg
+        FROM preparations p
+        JOIN medicaments m ON p.medicament_id = m.id
+        {where}
+        AND p.dosage_mg IS NOT NULL
+        GROUP BY m.nom, mois
+        ORDER BY mois, consommation_mg DESC
+    """, params)
+
+    if not conso_mensuelle.empty:
+        # KPIs consommation
+        total_conso_mg = conso_mensuelle["consommation_mg"].sum()
+        nb_meds_used = conso_mensuelle["medicament"].nunique()
+        nb_mois = conso_mensuelle["mois"].nunique()
+        conso_moy_mois = total_conso_mg / nb_mois if nb_mois > 0 else 0
+
+        ck1, ck2, ck3, ck4 = st.columns(4)
+        ck1.metric("Consommation totale", f"{total_conso_mg / 1000:,.1f} g")
+        ck2.metric("Molécules utilisées", nb_meds_used)
+        ck3.metric("Conso. moy./mois", f"{conso_moy_mois / 1000:,.1f} g")
+        ck4.metric("Période couverte", f"{nb_mois} mois")
+
+        # Top 10 médicaments par consommation totale
+        top_conso = conso_mensuelle.groupby("medicament").agg(
+            total_mg=("consommation_mg", "sum"),
+            total_preps=("nb_preparations", "sum"),
+        ).sort_values("total_mg", ascending=False).head(10).reset_index()
+
+        fig_top_conso = px.bar(
+            top_conso, x="total_mg", y="medicament",
+            orientation="h",
+            title="Top 10 - Consommation totale (mg)",
+            labels={"total_mg": "Consommation (mg)", "medicament": ""},
+            color="total_preps",
+            color_continuous_scale="Oranges",
+        )
+        fig_top_conso.update_layout(yaxis=dict(autorange="reversed"))
+        st.plotly_chart(fig_top_conso, use_container_width=True)
+
+        # Évolution mensuelle des top 5
+        top5_meds = top_conso["medicament"].head(5).tolist()
+        conso_top5 = conso_mensuelle[conso_mensuelle["medicament"].isin(top5_meds)]
+
+        fig_evol = px.line(
+            conso_top5, x="mois", y="consommation_mg",
+            color="medicament",
+            title="Évolution mensuelle de la consommation (Top 5)",
+            labels={"mois": "Mois", "consommation_mg": "Consommation (mg)", "medicament": "Médicament"},
+            markers=True,
+        )
+        st.plotly_chart(fig_evol, use_container_width=True)
+
+    # --- Consommation par service ---
+    st.subheader("Consommation par service hospitalier")
+    conso_service = query("""
+        SELECT
+            s.nom AS service,
+            m.nom AS medicament,
+            um.nb_preparations,
+            um.dose_totale,
+            um.unite_mesure
+        FROM utilisation_medicaments um
+        JOIN services s ON um.service_id = s.id
+        JOIN medicaments m ON um.medicament_id = m.id
+        ORDER BY um.dose_totale DESC
+    """)
+
+    if not conso_service.empty:
+        col_srv1, col_srv2 = st.columns(2)
+        with col_srv1:
+            service_totals = conso_service.groupby("service").agg(
+                total_dose=("dose_totale", "sum"),
+                total_preps=("nb_preparations", "sum"),
+            ).sort_values("total_dose", ascending=False).reset_index()
+
+            fig_srv = px.pie(
+                service_totals, names="service", values="total_dose",
+                title="Répartition de la consommation par service (mg)",
+            )
+            st.plotly_chart(fig_srv, use_container_width=True)
+
+        with col_srv2:
+            fig_srv_bar = px.bar(
+                service_totals, x="service", y="total_preps",
+                title="Nombre de préparations par service",
+                labels={"service": "", "total_preps": "Préparations"},
+                color="total_dose",
+                color_continuous_scale="Blues",
+            )
+            st.plotly_chart(fig_srv_bar, use_container_width=True)
+
+        with st.expander("Détail consommation par service et médicament"):
+            st.dataframe(
+                conso_service.rename(columns={
+                    "service": "Service",
+                    "medicament": "Médicament",
+                    "nb_preparations": "Préparations",
+                    "dose_totale": "Dose totale",
+                    "unite_mesure": "Unité",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+
+    # --- État des stocks et péremption ---
+    st.subheader("État des stocks et dates de péremption")
 
     col_s1, col_s2 = st.columns(2)
 
     with col_s1:
-        st.subheader("Température de la chambre robot")
-        temps = query("""
-            SELECT date_heure, temperature
-            FROM temperatures
-            ORDER BY date_heure
-        """)
-
-        if not temps.empty:
-            fig_temp = px.line(
-                temps, x="date_heure", y="temperature",
-                title="Température du robot APOTECA",
-                labels={"date_heure": "Date/Heure", "temperature": "Température (°C)"},
-            )
-            fig_temp.add_hline(y=25, line_dash="dash", line_color="red", annotation_text="Limite haute 25°C")
-            fig_temp.add_hline(y=18, line_dash="dash", line_color="blue", annotation_text="Limite basse 18°C")
-            st.plotly_chart(fig_temp, use_container_width=True)
-
-            t_min = temps["temperature"].min()
-            t_max = temps["temperature"].max()
-            t_avg = temps["temperature"].mean()
-            alerts = temps[(temps["temperature"] > 25) | (temps["temperature"] < 18)]
-            if len(alerts) > 0:
-                st.warning(f"Alertes température : {len(alerts)} relevés hors plage")
-            else:
-                st.success(f"Température OK : min={t_min}°C, max={t_max}°C, moy={t_avg:.1f}°C")
-
-    with col_s2:
-        st.subheader("État des stocks")
         stocks = query("""
             SELECT
                 m.nom AS medicament,
@@ -618,7 +704,64 @@ with tab6:
             styled = stocks.style.map(color_status, subset=["statut"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
 
-    # Nettoyages
+            nb_expired = len(stocks[stocks["statut"] == "EXPIRÉ"])
+            nb_soon = len(stocks[stocks["statut"] == "EXPIRE BIENTÔT"])
+            nb_ok = len(stocks[stocks["statut"] == "OK"])
+            if nb_expired > 0:
+                st.error(f"{nb_expired} lot(s) expiré(s)")
+            if nb_soon > 0:
+                st.warning(f"{nb_soon} lot(s) expire(nt) dans moins de 90 jours")
+            if nb_ok > 0 and nb_expired == 0 and nb_soon == 0:
+                st.success(f"Tous les {nb_ok} lots sont en date")
+
+    with col_s2:
+        # Composants utilisation (flacons consommés)
+        composants = query("""
+            SELECT m.nom AS medicament, cu.quantite AS flacons_utilises
+            FROM composants_utilisation cu
+            JOIN medicaments m ON cu.medicament_id = m.id
+            ORDER BY cu.quantite DESC
+        """)
+
+        if not composants.empty:
+            fig_comp = px.bar(
+                composants.head(15), x="flacons_utilises", y="medicament",
+                orientation="h",
+                title="Flacons consommés par médicament",
+                labels={"flacons_utilises": "Flacons", "medicament": ""},
+                color_discrete_sequence=["#e377c2"],
+            )
+            fig_comp.update_layout(yaxis=dict(autorange="reversed"))
+            st.plotly_chart(fig_comp, use_container_width=True)
+
+    # --- Température ---
+    st.subheader("Température de la chambre robot")
+    temps = query("""
+        SELECT date_heure, temperature
+        FROM temperatures
+        ORDER BY date_heure
+    """)
+
+    if not temps.empty:
+        fig_temp = px.line(
+            temps, x="date_heure", y="temperature",
+            title="Température du robot APOTECA",
+            labels={"date_heure": "Date/Heure", "temperature": "Température (°C)"},
+        )
+        fig_temp.add_hline(y=25, line_dash="dash", line_color="red", annotation_text="Limite haute 25°C")
+        fig_temp.add_hline(y=18, line_dash="dash", line_color="blue", annotation_text="Limite basse 18°C")
+        st.plotly_chart(fig_temp, use_container_width=True)
+
+        t_min = temps["temperature"].min()
+        t_max = temps["temperature"].max()
+        t_avg = temps["temperature"].mean()
+        alerts = temps[(temps["temperature"] > 25) | (temps["temperature"] < 18)]
+        if len(alerts) > 0:
+            st.warning(f"Alertes température : {len(alerts)} relevés hors plage")
+        else:
+            st.success(f"Température OK : min={t_min}°C, max={t_max}°C, moy={t_avg:.1f}°C")
+
+    # --- Nettoyages ---
     st.subheader("Historique nettoyages")
     nettoyages = query("""
         SELECT
