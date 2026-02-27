@@ -135,7 +135,7 @@ with tab1:
         labels={"mois": "Mois", "nb": "Nombre de préparations"},
         color_discrete_sequence=["#1f77b4"],
     )
-    st.plotly_chart(fig_monthly, use_container_width=True)
+    st.plotly_chart(fig_monthly, width="stretch")
 
     # Distribution par jour de la semaine et par heure
     col_left, col_right = st.columns(2)
@@ -161,7 +161,7 @@ with tab1:
             labels={"jour": "", "nb": "Préparations"},
             color_discrete_sequence=["#2ca02c"],
         )
-        st.plotly_chart(fig_wd, use_container_width=True)
+        st.plotly_chart(fig_wd, width="stretch")
 
     with col_right:
         hourly = query(f"""
@@ -178,7 +178,7 @@ with tab1:
             labels={"heure": "Heure", "nb": "Préparations"},
             color_discrete_sequence=["#ff7f0e"],
         )
-        st.plotly_chart(fig_hr, use_container_width=True)
+        st.plotly_chart(fig_hr, width="stretch")
 
 
 # ============================================================
@@ -248,7 +248,7 @@ with tab2:
             title=f"Productions du {sim_date}",
             labels={"heure": "Heure", "dosage_mg": "Dosage (mg)", "medicament": "Médicament"},
         )
-        st.plotly_chart(fig_timeline, use_container_width=True)
+        st.plotly_chart(fig_timeline, width="stretch")
 
         # Répartition des médicaments de la journée
         col1, col2 = st.columns(2)
@@ -259,7 +259,7 @@ with tab2:
                 med_counts, names="medicament", values="nb",
                 title="Répartition des médicaments",
             )
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.plotly_chart(fig_pie, width="stretch")
 
         with col2:
             # Temps par étape
@@ -278,7 +278,7 @@ with tab2:
                 title="Temps moyen par étape du robot",
                 color_discrete_sequence=["#d62728"],
             )
-            st.plotly_chart(fig_steps, use_container_width=True)
+            st.plotly_chart(fig_steps, width="stretch")
 
         # Tableau détaillé
         with st.expander("Tableau détaillé des préparations"):
@@ -293,7 +293,7 @@ with tab2:
                     "temps_production": "T. Production",
                     "temps_confirmation": "T. Confirmation",
                 }),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -329,7 +329,7 @@ with tab3:
         color_continuous_scale="Viridis",
     )
     fig_top.update_layout(yaxis=dict(autorange="reversed"))
-    st.plotly_chart(fig_top, use_container_width=True)
+    st.plotly_chart(fig_top, width="stretch")
 
     # Consommation par service
     st.subheader("Consommation par service hospitalier")
@@ -349,11 +349,11 @@ with tab3:
             color="dose_totale",
             color_continuous_scale="Blues",
         )
-        st.plotly_chart(fig_service, use_container_width=True)
+        st.plotly_chart(fig_service, width="stretch")
 
     # Tableau complet
     with st.expander("Tableau détaillé des médicaments"):
-        st.dataframe(top_meds, use_container_width=True, hide_index=True)
+        st.dataframe(top_meds, width="stretch", hide_index=True)
 
 
 # ============================================================
@@ -382,7 +382,7 @@ with tab4:
                 color="nb",
                 color_continuous_scale="RdYlGn_r",
             )
-            st.plotly_chart(fig_prec, use_container_width=True)
+            st.plotly_chart(fig_prec, width="stretch")
 
             # Calcul du taux dans +-1%
             total = precision["nb"].sum()
@@ -406,9 +406,9 @@ with tab4:
                 title="Types d'erreurs",
                 color_discrete_sequence=px.colors.qualitative.Set2,
             )
-            st.plotly_chart(fig_err, use_container_width=True)
+            st.plotly_chart(fig_err, width="stretch")
 
-            st.dataframe(erreurs, use_container_width=True, hide_index=True)
+            st.dataframe(erreurs, width="stretch", hide_index=True)
 
     # Taux d'erreur global
     nb_err = query("SELECT COUNT(*) AS n FROM erreurs")["n"][0]
@@ -438,7 +438,7 @@ with tab4:
             color_continuous_scale="RdYlGn",
             range_color=[80, 100],
         )
-        st.plotly_chart(fig_pm, use_container_width=True)
+        st.plotly_chart(fig_pm, width="stretch")
 
 
 # ============================================================
@@ -471,7 +471,7 @@ with tab5:
             "preps_jour_moy": "Preps/jour (moy)",
             "preps_heure_moy": "Preps/heure (moy)",
             "record_jour": "Record journalier",
-        }), use_container_width=True, hide_index=True)
+        }), width="stretch", hide_index=True)
 
     # Évolution dans le temps
     prod_time = query("""
@@ -483,6 +483,7 @@ with tab5:
     """)
 
     if not prod_time.empty:
+        prod_time["date"] = pd.to_datetime(prod_time["date"])
         fig_prod = px.scatter(
             prod_time, x="date", y="preparations_par_heure",
             color="operateur",
@@ -491,7 +492,7 @@ with tab5:
             labels={"date": "Date", "preparations_par_heure": "Preps/heure", "operateur": "Opérateur"},
             trendline="lowess",
         )
-        st.plotly_chart(fig_prod, use_container_width=True)
+        st.plotly_chart(fig_prod, width="stretch")
 
     # Simulation de charge
     st.subheader("Simulation de montée en charge")
@@ -533,7 +534,7 @@ with tab5:
             yaxis_title="Nombre de préparations",
             barmode="group",
         )
-        st.plotly_chart(fig_charge, use_container_width=True)
+        st.plotly_chart(fig_charge, width="stretch")
 
         # Capacité max estimée
         daily_cap = query(f"""
@@ -604,7 +605,7 @@ with tab6:
             color_continuous_scale="Oranges",
         )
         fig_top_conso.update_layout(yaxis=dict(autorange="reversed"))
-        st.plotly_chart(fig_top_conso, use_container_width=True)
+        st.plotly_chart(fig_top_conso, width="stretch")
 
         # Évolution mensuelle des top 5
         top5_meds = top_conso["medicament"].head(5).tolist()
@@ -617,7 +618,7 @@ with tab6:
             labels={"mois": "Mois", "consommation_mg": "Consommation (mg)", "medicament": "Médicament"},
             markers=True,
         )
-        st.plotly_chart(fig_evol, use_container_width=True)
+        st.plotly_chart(fig_evol, width="stretch")
 
     # --- Consommation par service ---
     st.subheader("Consommation par service hospitalier")
@@ -646,7 +647,7 @@ with tab6:
                 service_totals, names="service", values="total_dose",
                 title="Répartition de la consommation par service (mg)",
             )
-            st.plotly_chart(fig_srv, use_container_width=True)
+            st.plotly_chart(fig_srv, width="stretch")
 
         with col_srv2:
             fig_srv_bar = px.bar(
@@ -656,7 +657,7 @@ with tab6:
                 color="total_dose",
                 color_continuous_scale="Blues",
             )
-            st.plotly_chart(fig_srv_bar, use_container_width=True)
+            st.plotly_chart(fig_srv_bar, width="stretch")
 
         with st.expander("Détail consommation par service et médicament"):
             st.dataframe(
@@ -667,7 +668,7 @@ with tab6:
                     "dose_totale": "Dose totale",
                     "unite_mesure": "Unité",
                 }),
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
             )
 
     # --- État des stocks et péremption ---
@@ -702,7 +703,7 @@ with tab6:
                 return "background-color: #d4edda"
 
             styled = stocks.style.map(color_status, subset=["statut"])
-            st.dataframe(styled, use_container_width=True, hide_index=True)
+            st.dataframe(styled, width="stretch", hide_index=True)
 
             nb_expired = len(stocks[stocks["statut"] == "EXPIRÉ"])
             nb_soon = len(stocks[stocks["statut"] == "EXPIRE BIENTÔT"])
@@ -732,7 +733,7 @@ with tab6:
                 color_discrete_sequence=["#e377c2"],
             )
             fig_comp.update_layout(yaxis=dict(autorange="reversed"))
-            st.plotly_chart(fig_comp, use_container_width=True)
+            st.plotly_chart(fig_comp, width="stretch")
 
     # --- Température ---
     st.subheader("Température de la chambre robot")
@@ -750,7 +751,7 @@ with tab6:
         )
         fig_temp.add_hline(y=25, line_dash="dash", line_color="red", annotation_text="Limite haute 25°C")
         fig_temp.add_hline(y=18, line_dash="dash", line_color="blue", annotation_text="Limite basse 18°C")
-        st.plotly_chart(fig_temp, use_container_width=True)
+        st.plotly_chart(fig_temp, width="stretch")
 
         t_min = temps["temperature"].min()
         t_max = temps["temperature"].max()
@@ -772,7 +773,7 @@ with tab6:
         ORDER BY tn.debut DESC
     """)
     if not nettoyages.empty:
-        st.dataframe(nettoyages, use_container_width=True, hide_index=True)
+        st.dataframe(nettoyages, width="stretch", hide_index=True)
 
 
 # ============================================================
