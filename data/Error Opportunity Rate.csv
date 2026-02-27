@@ -1,0 +1,14 @@
+textBox15,textBox16,textBox23,textBox17,textBox24,textBox19,textBox25,textBox20,textBox26,textBox21,textBox27
+Type,Date,14/01/2026 09:36:12,Device,Apoteca 1,Message,Erreur lecture code barre produit en entrée,Description,NaCl 0.9% 100ml Freeflex POCHE MpId_ScannerMan,Utilisateur,Marylene ISNADIN
+Type,Date,14/01/2026 09:48:55,Device,Apoteca 1,Message,Erreur lecture code barre produit en entrée,Description,NaCl 0.9% 100ml Freeflex POCHE MpId_ScannerMan,Utilisateur,Marylene ISNADIN
+Type,Date,14/01/2026 10:14:20,Device,Apoteca 1,Message,Echec reconnaissance automatique étiquette flacon,Description,GEMCITABINE 2000mg/50ml (ARROW) MpId_Ident,Utilisateur,Marylene ISNADIN
+Type,Date,14/01/2026 10:15:38,Device,Apoteca 1,Message,Echec reconnaissance automatique étiquette flacon,Description,GEMCITABINE 2000mg/50ml (ARROW) MpId_Ident,Utilisateur,Marylene ISNADIN
+Type,Date,14/01/2026 10:28:28,Device,Apoteca 1,Message,Erreur lecture code barre du conteneur final en sortie,Description,NaCl 0.9% 100ml Freeflex POCHE MpId_ScaricoMan,Utilisateur,Marylene ISNADIN
+Type,Date,14/01/2026 12:08:39,Device,Apoteca 1,Message,Erreur lecture code barre produit en entrée,Description,NaCl 0.9% 100ml Freeflex POCHE MpId_ScannerMan,Utilisateur,Marylene ISNADIN
+Type,Date,14/01/2026 12:08:41,Device,Apoteca 1,Message,Erreur lecture code barre produit en entrée,Description,NaCl 0.9% 100ml Freeflex POCHE MpId_ScannerMan,Utilisateur,Marylene ISNADIN
+Type,Date,14/01/2026 12:21:10,Device,Apoteca 1,Message,Erreur lecture code barre du conteneur final en sortie,Description,NaCl 0.9% 100ml Freeflex POCHE MpId_ScaricoMan,Utilisateur,Marylene ISNADIN
+Type,Date,14/01/2026 13:01:58,Device,Apoteca 1,Message,Erreur lecture code barre du conteneur final en sortie,Description,Glucose 5% 250ml Freeflex POCHE MpId_ScaricoMan,Utilisateur,Marylene ISNADIN
+Type,Date,14/01/2026 15:02:28,Device,Apoteca 1,Message,Erreur lecture code barre du conteneur final en sortie,Description,NaCl 0.9% 500ml Freeflex POCHE MpId_ScaricoMan,Utilisateur,Marylene ISNADIN
+Type,Date,14/01/2026 15:06:27,Device,Apoteca 1,Message,Erreur lecture code barre du conteneur final en sortie,Description,NaCl 0.9% 100ml Freeflex POCHE MpId_ScaricoMan,Utilisateur,Marylene ISNADIN
+Type,Date,14/01/2026 16:08:18,Device,Apoteca 1,Message,Erreur lecture code barre du conteneur final en sortie,Description,NaCl 0.9% 250ml Freeflex POCHE MpId_ScaricoMan,Utilisateur,Mariama DIALLO
+Type,Date,14/01/2026 16:08:22,Device,Apoteca 1,Message,Bouton poussoir d’urgence enfoncé / [1-POS_CARICO  [Cmd: 1][X: 0.00][Y: 0.00][Z: 0.00][IdObj: 643][IdAction: 1][Velocity: 2]],Description,,Utilisateur,Mariama DIALLO

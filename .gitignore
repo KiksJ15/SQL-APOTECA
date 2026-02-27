@@ -1,0 +1,12 @@
+# Base de données générée
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
