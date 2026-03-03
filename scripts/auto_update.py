@@ -143,11 +143,10 @@ def login(page, username, password):
         # Essayer de cliquer l'icône rapport en haut à droite
         report_icon = None
         for sel in [
+            'a[ui-sref=".reports"]',
+            'a[href="#!/app/reports"]',
             'a[href*="reports"]',
-            'a[href*="report"]',
-            '[ng-href*="reports"]',
             '[ui-sref*="reports"]',
-            '[ui-sref*="report"]',
         ]:
             try:
                 el = page.query_selector(sel)
