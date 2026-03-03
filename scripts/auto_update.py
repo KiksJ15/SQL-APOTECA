@@ -125,16 +125,31 @@ def login(page, username, password):
     page.click('button:has-text("Login")')
 
     # Attendre la navigation post-login (arrive sur #!/app/labs)
+    # Le login Angular peut prendre du temps à rediriger
+    time.sleep(5)
     page.wait_for_load_state("networkidle", timeout=15000)
     time.sleep(3)
 
-    # Vérifier qu'on est connecté
-    current_url = page.url
-    if "login" in current_url.lower() or page.query_selector('#username'):
-        log("ERREUR: Login échoué (mauvais identifiants ?)")
+    # Vérifier qu'on est connecté en attendant que l'URL change
+    max_wait = 15
+    logged_in = False
+    for i in range(max_wait):
+        current_url = page.url
+        if "app/labs" in current_url or "app/reports" in current_url or "app/dashboard" in current_url:
+            logged_in = True
+            break
+        time.sleep(1)
+
+    if not logged_in:
+        # Dernier check : le champ username a disparu ?
+        if not page.query_selector('#username:visible'):
+            logged_in = True
+
+    if not logged_in:
+        log(f"ERREUR: Login échoué (URL actuelle: {page.url})")
         return False
 
-    log("Login effectué avec succès")
+    log(f"Login effectué avec succès (URL: {page.url})")
 
     # Après login, on est sur #!/app/labs — naviguer vers les rapports
     # Cliquer sur l'icône rapports (3e icône en haut à droite)
