@@ -472,7 +472,6 @@ def run_import(since_date=None):
 
 def get_last_date_from_db():
     """Recupere la derniere date en base pour l'import incremental."""
-    # Importer la fonction depuis import_data.py
     sys.path.insert(0, str(SCRIPT_DIR))
     try:
         from import_data import get_last_date
@@ -482,6 +481,90 @@ def get_last_date_from_db():
         return None
     finally:
         sys.path.pop(0)
+
+
+def show_status():
+    """Affiche l'etat actuel de la base et les donnees manquantes."""
+    import sqlite3
+    db_path = PROJECT_ROOT / "apoteca.db"
+
+    print("=" * 50)
+    print("  STATUT DE LA BASE APOTECA")
+    print("=" * 50)
+
+    if not db_path.exists():
+        print("\n  Base de donnees: NON TROUVEE")
+        print("  -> Lancez: python scripts/auto_update.py --full")
+        return
+
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+
+    # Derniere date par table
+    print("\n  Derniere date par table:")
+    tables_dates = [
+        ("preparations", "SELECT MAX(date(date_fin)) FROM preparations"),
+        ("erreurs", "SELECT MAX(date(date_heure)) FROM erreurs"),
+        ("temperatures", "SELECT MAX(date(date_heure)) FROM temperatures"),
+        ("productivite", "SELECT MAX(date) FROM productivite_utilisateurs"),
+        ("performance", "SELECT MAX(date) FROM performance_journaliere"),
+    ]
+    last_dates = []
+    for name, query in tables_dates:
+        try:
+            cursor.execute(query)
+            row = cursor.fetchone()
+            date_val = row[0] if row and row[0] else "aucune donnee"
+            if row and row[0]:
+                last_dates.append(row[0])
+        except Exception:
+            date_val = "erreur"
+        print(f"    {name:20s} -> {date_val}")
+
+    # Nombre d'enregistrements
+    print("\n  Nombre d'enregistrements:")
+    for table in ["preparations", "erreurs", "temperatures",
+                   "productivite_utilisateurs", "performance_journaliere"]:
+        try:
+            cursor.execute(f"SELECT COUNT(*) FROM {table}")
+            count = cursor.fetchone()[0]
+        except Exception:
+            count = "?"
+        print(f"    {table:35s} -> {count}")
+
+    # Calcul du retard
+    if last_dates:
+        last_date = max(last_dates)
+        from datetime import date as dt_date
+        parts = last_date.split("-")
+        last = dt_date(int(parts[0]), int(parts[1]), int(parts[2]))
+        today = dt_date.today()
+        gap = (today - last).days
+
+        print(f"\n  Derniere donnee : {last_date}")
+        print(f"  Aujourd'hui     : {today}")
+        if gap == 0:
+            print(f"  Statut          : A JOUR")
+        elif gap == 1:
+            print(f"  Statut          : 1 jour de retard")
+        else:
+            print(f"  Statut          : {gap} jours de retard")
+            print(f"\n  -> Pour rattraper: python scripts/auto_update.py")
+            print(f"     (telecharge automatiquement depuis {last_date})")
+    else:
+        print("\n  Base vide!")
+        print("  -> Lancez: python scripts/auto_update.py --full")
+
+    # Dernier log
+    if LOG_FILE.exists():
+        print(f"\n  Dernier log:")
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            for line in lines[-3:]:
+                print(f"    {line.strip()}")
+
+    conn.close()
+    print("\n" + "=" * 50)
 
 
 def discover_page(page):
@@ -525,13 +608,19 @@ def main():
     parser = argparse.ArgumentParser(description="Telechargement automatique des CSV Apoteca")
     parser.add_argument("--headed", action="store_true", help="Mode visible (pour debug)")
     parser.add_argument("--discover", action="store_true", help="Mode decouverte de la page")
+    parser.add_argument("--status", action="store_true",
+                        help="Affiche l'etat de la base et les donnees manquantes")
     parser.add_argument("--full", action="store_true",
-                        help="Import complet (depuis 01/01/2025). Sans ce flag, mode incremental.")
+                        help="Import complet (depuis 01/01/2023). Sans ce flag, mode incremental.")
     parser.add_argument("--date-from", default=None,
                         help="Date de debut au format dd/mm/yyyy (defaut: auto)")
     parser.add_argument("--date-to", default=None,
                         help="Date de fin au format dd/mm/yyyy (defaut: aujourd'hui)")
     args = parser.parse_args()
+
+    if args.status:
+        show_status()
+        return
 
     if not args.date_to:
         args.date_to = datetime.now().strftime("%d/%m/%Y")
