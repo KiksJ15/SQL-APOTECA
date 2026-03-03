@@ -409,7 +409,7 @@ def download_reports(page, download_dir, date_from, date_to, is_full_mode=False)
 
 
 def copy_to_data(download_dir):
-    """Copie les CSV téléchargés vers le dossier data/."""
+    """Copie les CSV telecharges vers le dossier data/ et anonymise Process Step Time."""
     DATA_DIR.mkdir(exist_ok=True)
     count = 0
     for f in os.listdir(download_dir):
@@ -418,7 +418,31 @@ def copy_to_data(download_dir):
             dest = DATA_DIR / f
             shutil.copy2(src, dest)
             count += 1
-    log(f"{count} fichiers CSV copiés dans {DATA_DIR}")
+    log(f"{count} fichiers CSV copies dans {DATA_DIR}")
+
+    # Anonymiser Process Step Time (supprimer colonne patient textBox24)
+    pst_file = DATA_DIR / "Process Step Time.csv"
+    if pst_file.exists():
+        log("Anonymisation de Process Step Time (suppression colonne textBox24)...")
+        try:
+            remove_script = SCRIPT_DIR / "remove_column.py"
+            result = subprocess.run(
+                [sys.executable, str(remove_script), str(pst_file)],
+                capture_output=True,
+                text=True,
+                cwd=str(PROJECT_ROOT),
+            )
+            if result.returncode == 0:
+                log(f"  {result.stdout.strip()}")
+                # Remplacer l'original par la version nettoyee
+                cleaned = DATA_DIR / "Process Step Time_cleaned.csv"
+                if cleaned.exists():
+                    log("  Process Step Time_cleaned.csv genere")
+            else:
+                log(f"  Erreur anonymisation: {result.stderr}")
+        except Exception as e:
+            log(f"  Erreur anonymisation: {e}")
+
     return count
 
 
