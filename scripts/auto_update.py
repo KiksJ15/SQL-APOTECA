@@ -367,9 +367,33 @@ def main():
     username, password = load_credentials()
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=not (args.headed or args.discover),
-        )
+        # Utiliser Chrome installé sur le PC (pare-feu, certificats déjà configurés)
+        chrome_path = os.getenv("CHROME_PATH")
+        if not chrome_path:
+            # Chemins par défaut selon l'OS
+            if sys.platform == "win32":
+                for path in [
+                    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                ]:
+                    if os.path.exists(path):
+                        chrome_path = path
+                        break
+            elif sys.platform == "darwin":
+                mac_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+                if os.path.exists(mac_path):
+                    chrome_path = mac_path
+
+        launch_args = {
+            "headless": not (args.headed or args.discover),
+        }
+        if chrome_path:
+            launch_args["executable_path"] = chrome_path
+            log(f"Utilisation de Chrome: {chrome_path}")
+        else:
+            log("Chrome non trouvé, utilisation de Chromium Playwright")
+
+        browser = p.chromium.launch(**launch_args)
         context = browser.new_context(
             accept_downloads=True,
             ignore_https_errors=True,  # Certificats internes Curie
