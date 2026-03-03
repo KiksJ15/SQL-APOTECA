@@ -405,23 +405,42 @@ def copy_to_data(download_dir):
     return count
 
 
-def run_import():
+def run_import(since_date=None):
     """Lance le script d'import de la base SQLite."""
     import_script = SCRIPT_DIR / "import_data.py"
-    log("Lancement de l'import SQLite...")
+    cmd = [sys.executable, str(import_script)]
+    if since_date:
+        cmd += ["--since", since_date]
+        log(f"Lancement de l'import incremental (depuis {since_date})...")
+    else:
+        log("Lancement de l'import complet...")
     result = subprocess.run(
-        [sys.executable, str(import_script)],
+        cmd,
         capture_output=True,
         text=True,
         cwd=str(PROJECT_ROOT),
     )
     if result.returncode == 0:
-        log("Import terminé avec succès")
+        log("Import termine avec succes")
         for line in result.stdout.strip().split("\n")[-5:]:
             log(f"  {line}")
     else:
         log(f"ERREUR import: {result.stderr}")
     return result.returncode == 0
+
+
+def get_last_date_from_db():
+    """Recupere la derniere date en base pour l'import incremental."""
+    # Importer la fonction depuis import_data.py
+    sys.path.insert(0, str(SCRIPT_DIR))
+    try:
+        from import_data import get_last_date
+        db_path = PROJECT_ROOT / "apoteca.db"
+        return get_last_date(str(db_path))
+    except Exception:
+        return None
+    finally:
+        sys.path.pop(0)
 
 
 def discover_page(page):
@@ -462,21 +481,42 @@ def discover_page(page):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Téléchargement automatique des CSV Apoteca")
+    parser = argparse.ArgumentParser(description="Telechargement automatique des CSV Apoteca")
     parser.add_argument("--headed", action="store_true", help="Mode visible (pour debug)")
-    parser.add_argument("--discover", action="store_true", help="Mode découverte de la page")
-    parser.add_argument("--date-from", default="01/01/2025",
-                        help="Date de début au format dd/mm/yyyy (défaut: 01/01/2025)")
+    parser.add_argument("--discover", action="store_true", help="Mode decouverte de la page")
+    parser.add_argument("--full", action="store_true",
+                        help="Import complet (depuis 01/01/2025). Sans ce flag, mode incremental.")
+    parser.add_argument("--date-from", default=None,
+                        help="Date de debut au format dd/mm/yyyy (defaut: auto)")
     parser.add_argument("--date-to", default=None,
-                        help="Date de fin au format dd/mm/yyyy (défaut: aujourd'hui)")
+                        help="Date de fin au format dd/mm/yyyy (defaut: aujourd'hui)")
     args = parser.parse_args()
 
     if not args.date_to:
         args.date_to = datetime.now().strftime("%d/%m/%Y")
 
+    # Mode incremental : detecter la derniere date en base
+    since_date = None  # pour import_data.py (format YYYY-MM-DD)
+    if not args.full and not args.date_from:
+        last_date = get_last_date_from_db()
+        if last_date:
+            # Convertir YYYY-MM-DD -> dd/mm/yyyy pour Apoteca
+            parts = last_date.split("-")
+            args.date_from = f"{parts[2]}/{parts[1]}/{parts[0]}"
+            since_date = last_date
+            log(f"Mode incremental: derniere date en base = {last_date}")
+        else:
+            args.date_from = "01/01/2025"
+            log("Base vide, import complet depuis 01/01/2025")
+    elif args.full:
+        args.date_from = args.date_from or "01/01/2025"
+        log("Mode complet force (--full)")
+    else:
+        log(f"Date de debut manuelle: {args.date_from}")
+
     log("=" * 60)
-    log("Début de la mise à jour automatique")
-    log(f"Période: {args.date_from} → {args.date_to}")
+    log("Debut de la mise a jour automatique")
+    log(f"Periode: {args.date_from} -> {args.date_to}")
 
     username, password = load_credentials()
 
@@ -541,10 +581,10 @@ def main():
 
         browser.close()
 
-        # 4. Relancer l'import
-        run_import()
+        # 4. Relancer l'import (incremental si since_date)
+        run_import(since_date=since_date)
 
-    log("Mise à jour terminée")
+    log("Mise a jour terminee")
     log("=" * 60)
 
 

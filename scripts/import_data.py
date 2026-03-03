@@ -599,10 +599,72 @@ def import_stats_utilisateurs_medicaments(cursor, data_dir):
     return count
 
 
+def get_last_date(db_path):
+    """Retourne la dernière date en base (format YYYY-MM-DD) ou None si vide."""
+    if not os.path.exists(db_path):
+        return None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        # Chercher la date max dans les tables principales
+        dates = []
+        for query in [
+            "SELECT MAX(date(date_fin)) FROM preparations",
+            "SELECT MAX(date(date_heure)) FROM erreurs",
+            "SELECT MAX(date(date_heure)) FROM temperatures",
+            "SELECT MAX(date) FROM productivite_utilisateurs",
+            "SELECT MAX(date) FROM performance_journaliere",
+        ]:
+            try:
+                cursor.execute(query)
+                row = cursor.fetchone()
+                if row and row[0]:
+                    dates.append(row[0])
+            except Exception:
+                continue
+        conn.close()
+        return max(dates) if dates else None
+    except Exception:
+        return None
+
+
+def clear_data_since(cursor, since_date):
+    """Supprime les donnees depuis une date (pour import incremental)."""
+    print(f"Suppression des donnees depuis {since_date}...")
+    # Tables avec colonne date
+    date_deletes = [
+        ("preparations", f"date(date_fin) >= '{since_date}'"),
+        ("erreurs", f"date(date_heure) >= '{since_date}'"),
+        ("temperatures", f"date(date_heure) >= '{since_date}'"),
+        ("taches_nettoyage", f"date(debut) >= '{since_date}'"),
+        ("productivite_utilisateurs", f"date >= '{since_date}'"),
+        ("performance_journaliere", f"date >= '{since_date}'"),
+    ]
+    for table, condition in date_deletes:
+        try:
+            cursor.execute(f"DELETE FROM {table} WHERE {condition}")
+            deleted = cursor.rowcount
+            if deleted > 0:
+                print(f"  {table}: {deleted} enregistrements supprimes")
+        except Exception as e:
+            print(f"  {table}: erreur suppression: {e}")
+
+    # Tables sans date (toujours reimporter en entier)
+    for table in [
+        "utilisation_medicaments", "composants_utilisation",
+        "statistiques_medicaments", "distribution_precision_dosage",
+        "activite_utilisateurs",
+    ]:
+        cursor.execute(f"DELETE FROM {table}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Import des CSV Apoteca vers SQLite")
-    parser.add_argument("--db", default="apoteca.db", help="Chemin de la base SQLite (défaut: apoteca.db)")
-    parser.add_argument("--data", default="data", help="Dossier contenant les CSV (défaut: data/)")
+    parser.add_argument("--db", default="apoteca.db", help="Chemin de la base SQLite (defaut: apoteca.db)")
+    parser.add_argument("--data", default="data", help="Dossier contenant les CSV (defaut: data/)")
+    parser.add_argument("--since", default=None,
+                        help="Import incremental: ne reimporte que depuis cette date (YYYY-MM-DD). "
+                             "Sans ce flag, reimport complet.")
     args = parser.parse_args()
 
     # Résoudre les chemins relatifs par rapport à la racine du projet
@@ -613,14 +675,18 @@ def main():
     schema_path = os.path.join(project_root, "sql", "schema.sql")
 
     if not os.path.isdir(data_dir):
-        print(f"ERREUR: Dossier '{data_dir}' non trouvé.")
+        print(f"ERREUR: Dossier '{data_dir}' non trouve.")
         sys.exit(1)
 
-    print(f"Base de données : {db_path}")
+    print(f"Base de donnees : {db_path}")
     print(f"Dossier CSV     : {data_dir}")
+    if args.since:
+        print(f"Mode incremental: depuis {args.since}")
+    else:
+        print(f"Mode complet: reimport total")
     print()
 
-    # Créer la base et le schéma
+    # Creer la base et le schema
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
@@ -629,20 +695,23 @@ def main():
     with open(schema_path, 'r') as f:
         cursor.executescript(f.read())
 
-    # Vider les tables avant import pour éviter les doublons si relancé
-    tables_to_clear = [
-        "distribution_precision_dosage", "statistiques_medicaments",
-        "composants_utilisation", "utilisation_medicaments",
-        "performance_journaliere", "productivite_utilisateurs",
-        "taches_nettoyage", "temperatures", "erreurs", "preparations",
-        "activite_utilisateurs",
-    ]
-    for table in tables_to_clear:
-        cursor.execute(f"DELETE FROM {table}")
-    # Vider aussi les tables de référence (elles seront recréées par get_or_create)
-    for table in ["conteneurs", "services", "medicaments", "utilisateurs", "dispositifs"]:
-        cursor.execute(f"DELETE FROM {table}")
-    print("Tables vidées avant import.\n")
+    if args.since:
+        # Mode incremental : supprimer uniquement les donnees recentes
+        clear_data_since(cursor, args.since)
+    else:
+        # Mode complet : vider toutes les tables
+        tables_to_clear = [
+            "distribution_precision_dosage", "statistiques_medicaments",
+            "composants_utilisation", "utilisation_medicaments",
+            "performance_journaliere", "productivite_utilisateurs",
+            "taches_nettoyage", "temperatures", "erreurs", "preparations",
+            "activite_utilisateurs",
+        ]
+        for table in tables_to_clear:
+            cursor.execute(f"DELETE FROM {table}")
+        for table in ["conteneurs", "services", "medicaments", "utilisateurs", "dispositifs"]:
+            cursor.execute(f"DELETE FROM {table}")
+        print("Tables videes avant import.\n")
 
     # Import de chaque fichier
     importers = [
