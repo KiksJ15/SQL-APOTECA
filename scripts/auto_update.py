@@ -4,8 +4,9 @@ Script d'automatisation du téléchargement des CSV Apoteca et mise à jour de l
 
 Utilise Playwright (navigateur headless) pour :
 1. Se connecter à l'interface web Apoteca
-2. Télécharger tous les rapports CSV
-3. Relancer l'import dans la base SQLite
+2. Naviguer dans le Telerik ReportViewer
+3. Télécharger tous les rapports en CSV
+4. Relancer l'import dans la base SQLite
 
 Usage:
     # Premier lancement (mode visible pour vérifier) :
@@ -16,6 +17,9 @@ Usage:
 
     # Découvrir la structure de la page :
     python scripts/auto_update.py --discover
+
+    # Changer la date de début (défaut: 01/01/2025) :
+    python scripts/auto_update.py --date-from 01/01/2024
 
 Prérequis:
     pip install playwright python-dotenv
@@ -58,7 +62,7 @@ BASE_URL = "https://sxapplapo01.curie.net"
 REPORTS_URL = f"{BASE_URL}/#!/app/reports"
 
 # Liste des rapports CSV à télécharger
-# Clé = nom du fichier attendu dans data/, Valeur = identifiant du rapport dans l'UI
+# Clé = nom du fichier attendu dans data/, Valeur = texte exact dans la sidebar
 REPORTS = {
     "Process Step Time.csv": "Process Step Time",
     "Error Opportunity Rate.csv": "Error Opportunity Rate",
@@ -71,7 +75,7 @@ REPORTS = {
     "Productivité utilisateurs.csv": "Productivité utilisateurs",
     "Statistiques médicaments.csv": "Statistiques médicaments",
     "Tâche Propre.csv": "Tâche Propre",
-    "Statistiques utilisateurs par mèdicaments  (1).csv": "Statistiques utilisateurs par médicaments",
+    "Statistiques utilisateurs par mèdicaments  (1).csv": "Statistiques utilisateurs par mèdicaments",
 }
 
 
@@ -80,7 +84,6 @@ def log(msg):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{timestamp}] {msg}"
     print(line)
-    # Écrire dans le fichier log
     LOG_FILE.parent.mkdir(exist_ok=True)
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(line + "\n")
@@ -105,93 +108,205 @@ def login(page, username, password):
     log("Navigation vers la page de login...")
     page.goto(BASE_URL, wait_until="networkidle", timeout=30000)
 
-    # Attendre le formulaire de login
-    # NOTE: Ajustez ces sélecteurs selon l'interface Apoteca réelle
-    # Essayer plusieurs sélecteurs courants
-    login_selectors = [
-        'input[type="text"]',
-        'input[name="username"]',
-        'input[name="login"]',
-        'input[id="username"]',
-        '#username',
-        'input[placeholder*="user" i]',
-        'input[placeholder*="login" i]',
-        'input[placeholder*="identifiant" i]',
-    ]
-
-    password_selectors = [
-        'input[type="password"]',
-        'input[name="password"]',
-        '#password',
-    ]
-
-    submit_selectors = [
-        'button[type="submit"]',
-        'input[type="submit"]',
-        'button:has-text("Login")',
-        'button:has-text("Connexion")',
-        'button:has-text("Se connecter")',
-        'button:has-text("OK")',
-    ]
-
-    # Trouver le champ username
-    username_field = None
-    for sel in login_selectors:
-        try:
-            el = page.wait_for_selector(sel, timeout=3000)
-            if el and el.is_visible():
-                username_field = el
-                log(f"  Champ username trouvé: {sel}")
-                break
-        except Exception:
-            continue
-
-    if not username_field:
-        log("ERREUR: Impossible de trouver le champ username")
-        log("Lancez avec --discover pour voir la structure de la page")
+    # Sélecteurs identifiés via --discover
+    try:
+        page.wait_for_selector('#username', timeout=10000)
+    except Exception:
+        # Peut-être déjà connecté ?
+        if "reports" in page.url or "app" in page.url:
+            log("Déjà connecté (session active)")
+            return True
+        log("ERREUR: Page de login non trouvée")
         return False
 
-    # Trouver le champ password
-    password_field = None
-    for sel in password_selectors:
-        try:
-            el = page.query_selector(sel)
-            if el and el.is_visible():
-                password_field = el
-                log(f"  Champ password trouvé: {sel}")
-                break
-        except Exception:
-            continue
-
-    if not password_field:
-        log("ERREUR: Impossible de trouver le champ password")
-        return False
-
-    # Remplir et soumettre
-    username_field.fill(username)
-    password_field.fill(password)
-
-    # Trouver le bouton submit
-    for sel in submit_selectors:
-        try:
-            btn = page.query_selector(sel)
-            if btn and btn.is_visible():
-                log(f"  Bouton submit trouvé: {sel}")
-                btn.click()
-                break
-        except Exception:
-            continue
+    log("  Remplissage du formulaire de login...")
+    page.fill('#username', username)
+    page.fill('#password', password)
+    page.click('button:has-text("Login")')
 
     # Attendre la navigation post-login
     page.wait_for_load_state("networkidle", timeout=15000)
-    time.sleep(2)
+    time.sleep(3)
 
-    log("Login effectué")
+    # Vérifier qu'on est connecté
+    current_url = page.url
+    if "login" in current_url.lower() or page.query_selector('#username'):
+        log("ERREUR: Login échoué (mauvais identifiants ?)")
+        return False
+
+    log("Login effectué avec succès")
     return True
 
 
-def download_reports(page, download_dir):
-    """Navigue vers les rapports et télécharge chaque CSV."""
+def set_date_range(page, date_from, date_to):
+    """Configure la plage de dates dans le formulaire du rapport."""
+    try:
+        # Champs de date du Telerik ReportViewer
+        # Le champ "De" (date début)
+        de_input = page.query_selector('input[placeholder*="De" i]')
+        if not de_input:
+            # Chercher par label
+            de_inputs = page.query_selector_all('input[type="text"]')
+            # Les 2 premiers inputs texte sont souvent De et À
+            if len(de_inputs) >= 2:
+                de_input = de_inputs[0]
+                a_input = de_inputs[1]
+            else:
+                log("    Champs de date non trouvés, on garde les défauts")
+                return
+        else:
+            a_input = page.query_selector('input[placeholder*="À" i]')
+
+        if de_input:
+            de_input.triple_click()  # Sélectionner tout le texte
+            de_input.fill(date_from)
+            log(f"    Date De: {date_from}")
+
+        if a_input:
+            a_input.triple_click()
+            a_input.fill(date_to)
+            log(f"    Date À: {date_to}")
+
+    except Exception as e:
+        log(f"    Erreur dates: {e} (on continue avec les défauts)")
+
+
+def download_single_report(page, report_name, filename, download_dir, date_from, date_to):
+    """Télécharge un seul rapport CSV."""
+    log(f"  📥 {report_name}...")
+
+    # 1. Cliquer sur le rapport dans la sidebar
+    # Les rapports sont dans la sidebar gauche, chercher le texte exact
+    report_link = None
+    try:
+        # Chercher un élément cliquable avec le texte exact
+        all_links = page.query_selector_all('a, div[ng-click], span[ng-click], li')
+        for el in all_links:
+            try:
+                text = el.inner_text().strip()
+                if text == report_name:
+                    report_link = el
+                    break
+            except Exception:
+                continue
+
+        # Fallback: chercher par texte partiel
+        if not report_link:
+            report_link = page.query_selector(f'text="{report_name}"')
+
+    except Exception:
+        pass
+
+    if not report_link:
+        log(f"    ❌ Rapport '{report_name}' non trouvé dans la sidebar")
+        return False
+
+    report_link.click()
+    time.sleep(2)
+
+    # 2. Configurer les dates
+    set_date_range(page, date_from, date_to)
+    time.sleep(1)
+
+    # 3. Cliquer sur Preview
+    try:
+        preview_btn = page.query_selector('button:has-text("Preview")')
+        if not preview_btn:
+            preview_btn = page.query_selector('input[value="Preview"]')
+        if preview_btn:
+            preview_btn.click()
+            log("    Chargement du rapport...")
+            # Attendre que le rapport se charge (le viewer Telerik)
+            page.wait_for_load_state("networkidle", timeout=60000)
+            time.sleep(5)  # Les gros rapports peuvent prendre du temps
+        else:
+            log("    Bouton Preview non trouvé, le rapport est peut-être déjà chargé")
+    except Exception as e:
+        log(f"    Erreur Preview: {e}")
+
+    # 4. Cliquer sur le bouton Export (↓) dans la toolbar Telerik
+    try:
+        # Le bouton export dans Telerik ReportViewer
+        export_btn = None
+        for sel in [
+            '[title="Export"]',
+            '[title="Exporter"]',
+            '.trv-report-viewer-export',
+            'a[title*="Export" i]',
+            '[data-command="telerik_ReportViewer_export"]',
+            # L'icône flèche vers le bas dans la toolbar
+            '.k-i-download',
+            '.k-icon.k-i-download',
+            # Sélecteur générique pour l'icône export Telerik
+            '[class*="export"]',
+        ]:
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible():
+                    export_btn = el
+                    log(f"    Bouton export trouvé: {sel}")
+                    break
+            except Exception:
+                continue
+
+        # Si pas trouvé, chercher dans les boutons de la toolbar
+        if not export_btn:
+            toolbar_btns = page.query_selector_all('.trv-toolbar button, .trv-toolbar a, [class*="toolbar"] button, [class*="toolbar"] a')
+            for btn in toolbar_btns:
+                title = btn.get_attribute("title") or ""
+                cls = btn.get_attribute("class") or ""
+                if "export" in title.lower() or "download" in title.lower() or "export" in cls.lower():
+                    export_btn = btn
+                    log(f"    Bouton export trouvé dans toolbar: title='{title}'")
+                    break
+
+        if not export_btn:
+            log(f"    ❌ Bouton export non trouvé")
+            return False
+
+        export_btn.click()
+        time.sleep(1)
+
+        # 5. Sélectionner CSV dans le menu déroulant
+        csv_option = None
+        for sel in [
+            'text="CSV"',
+            'a:has-text("CSV")',
+            'li:has-text("CSV")',
+            'span:has-text("CSV")',
+            '[data-format="CSV"]',
+            'option:has-text("CSV")',
+        ]:
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible():
+                    csv_option = el
+                    break
+            except Exception:
+                continue
+
+        if not csv_option:
+            log(f"    ❌ Option CSV non trouvée dans le menu export")
+            return False
+
+        # 6. Télécharger
+        with page.expect_download(timeout=60000) as download_info:
+            csv_option.click()
+        download = download_info.value
+
+        dest = os.path.join(download_dir, filename)
+        download.save_as(dest)
+        file_size = os.path.getsize(dest)
+        log(f"    ✅ {filename} ({file_size:,} octets)")
+        return True
+
+    except Exception as e:
+        log(f"    ❌ Erreur export: {e}")
+        return False
+
+
+def download_reports(page, download_dir, date_from, date_to):
+    """Télécharge tous les rapports CSV."""
     log(f"Navigation vers les rapports: {REPORTS_URL}")
     page.goto(REPORTS_URL, wait_until="networkidle", timeout=30000)
     time.sleep(3)
@@ -200,81 +315,18 @@ def download_reports(page, download_dir):
 
     for filename, report_name in REPORTS.items():
         try:
-            log(f"  Téléchargement: {report_name}...")
+            success = download_single_report(
+                page, report_name, filename, download_dir, date_from, date_to
+            )
+            if success:
+                downloaded.append(filename)
 
-            # Cliquer sur le rapport (chercher un lien/bouton avec ce texte)
-            report_link = None
-            for sel in [
-                f'text="{report_name}"',
-                f'a:has-text("{report_name}")',
-                f'button:has-text("{report_name}")',
-                f'div:has-text("{report_name}")',
-                f'span:has-text("{report_name}")',
-            ]:
-                try:
-                    el = page.query_selector(sel)
-                    if el and el.is_visible():
-                        report_link = el
-                        break
-                except Exception:
-                    continue
-
-            if not report_link:
-                log(f"    SKIP: Rapport '{report_name}' non trouvé sur la page")
-                continue
-
-            # Cliquer sur le rapport
-            report_link.click()
-            page.wait_for_load_state("networkidle", timeout=10000)
-            time.sleep(2)
-
-            # Chercher le bouton de téléchargement/export CSV
-            export_btn = None
-            for sel in [
-                'button:has-text("Export")',
-                'button:has-text("CSV")',
-                'button:has-text("Download")',
-                'button:has-text("Télécharger")',
-                'a:has-text("Export")',
-                'a:has-text("CSV")',
-                '[class*="export"]',
-                '[class*="download"]',
-                '[title*="export" i]',
-                '[title*="csv" i]',
-            ]:
-                try:
-                    el = page.query_selector(sel)
-                    if el and el.is_visible():
-                        export_btn = el
-                        break
-                except Exception:
-                    continue
-
-            if not export_btn:
-                log(f"    SKIP: Bouton export non trouvé pour '{report_name}'")
-                # Revenir à la liste des rapports
-                page.goto(REPORTS_URL, wait_until="networkidle", timeout=15000)
-                time.sleep(2)
-                continue
-
-            # Télécharger
-            with page.expect_download(timeout=30000) as download_info:
-                export_btn.click()
-            download = download_info.value
-
-            # Sauvegarder dans le dossier temporaire
-            dest = os.path.join(download_dir, filename)
-            download.save_as(dest)
-            downloaded.append(filename)
-            log(f"    OK: {filename}")
-
-            # Revenir à la liste des rapports
+            # Revenir à la page rapports pour le prochain
             page.goto(REPORTS_URL, wait_until="networkidle", timeout=15000)
             time.sleep(2)
 
         except Exception as e:
-            log(f"    ERREUR: {report_name} -> {e}")
-            # Tenter de revenir à la page rapports
+            log(f"  ❌ Erreur globale {report_name}: {e}")
             try:
                 page.goto(REPORTS_URL, wait_until="networkidle", timeout=15000)
                 time.sleep(2)
@@ -310,7 +362,6 @@ def run_import():
     )
     if result.returncode == 0:
         log("Import terminé avec succès")
-        # Afficher le résumé (dernières lignes)
         for line in result.stdout.strip().split("\n")[-5:]:
             log(f"  {line}")
     else:
@@ -325,7 +376,7 @@ def discover_page(page):
     page.goto(BASE_URL, wait_until="networkidle", timeout=30000)
     time.sleep(3)
 
-    log("\n--- FORMULAIRES trouvés ---")
+    log("\n--- PAGE DE LOGIN ---")
     inputs = page.query_selector_all("input")
     for inp in inputs:
         attrs = {
@@ -342,7 +393,7 @@ def discover_page(page):
         text = btn.inner_text() if btn.inner_text() else btn.get_attribute("value")
         log(f"  <button> {text}")
 
-    log("\n--- LIENS trouvés ---")
+    log("\n--- LIENS ---")
     links = page.query_selector_all("a")
     for link in links[:30]:
         text = link.inner_text().strip()
@@ -359,20 +410,51 @@ def main():
     parser = argparse.ArgumentParser(description="Téléchargement automatique des CSV Apoteca")
     parser.add_argument("--headed", action="store_true", help="Mode visible (pour debug)")
     parser.add_argument("--discover", action="store_true", help="Mode découverte de la page")
+    parser.add_argument("--date-from", default="01/01/2025",
+                        help="Date de début au format dd/mm/yyyy (défaut: 01/01/2025)")
+    parser.add_argument("--date-to", default=None,
+                        help="Date de fin au format dd/mm/yyyy (défaut: aujourd'hui)")
     args = parser.parse_args()
+
+    if not args.date_to:
+        args.date_to = datetime.now().strftime("%d/%m/%Y")
 
     log("=" * 60)
     log("Début de la mise à jour automatique")
+    log(f"Période: {args.date_from} → {args.date_to}")
 
     username, password = load_credentials()
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=not (args.headed or args.discover),
-        )
+        # Utiliser Chrome installé sur le PC (pare-feu, certificats déjà configurés)
+        chrome_path = os.getenv("CHROME_PATH")
+        if not chrome_path:
+            if sys.platform == "win32":
+                for path in [
+                    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                ]:
+                    if os.path.exists(path):
+                        chrome_path = path
+                        break
+            elif sys.platform == "darwin":
+                mac_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+                if os.path.exists(mac_path):
+                    chrome_path = mac_path
+
+        launch_args = {
+            "headless": not (args.headed or args.discover),
+        }
+        if chrome_path:
+            launch_args["executable_path"] = chrome_path
+            log(f"Utilisation de Chrome: {chrome_path}")
+        else:
+            log("Chrome non trouvé, utilisation de Chromium Playwright")
+
+        browser = p.chromium.launch(**launch_args)
         context = browser.new_context(
             accept_downloads=True,
-            ignore_https_errors=True,  # Certificats internes Curie
+            ignore_https_errors=True,
         )
         page = context.new_page()
 
@@ -390,7 +472,7 @@ def main():
         # 2. Télécharger les rapports
         import tempfile
         with tempfile.TemporaryDirectory() as tmp_dir:
-            downloaded = download_reports(page, tmp_dir)
+            downloaded = download_reports(page, tmp_dir, args.date_from, args.date_to)
 
             if not downloaded:
                 log("ATTENTION: Aucun fichier téléchargé")
