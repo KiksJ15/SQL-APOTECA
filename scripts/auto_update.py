@@ -61,8 +61,11 @@ LOG_FILE = PROJECT_ROOT / "logs" / "auto_update.log"
 BASE_URL = "https://sxapplapo01.curie.net"
 REPORTS_URL = f"{BASE_URL}/#!/app/reports"
 
-# Liste des rapports CSV à télécharger
-# Clé = nom du fichier attendu dans data/, Valeur = texte exact dans la sidebar
+# Date de depart par defaut pour l'import complet
+DEFAULT_START_DATE = "01/01/2023"
+
+# Liste des rapports CSV a telecharger
+# Cle = nom du fichier attendu dans data/, Valeur = texte exact dans la sidebar
 REPORTS = {
     "Process Step Time.csv": "Process Step Time",
     "Error Opportunity Rate.csv": "Error Opportunity Rate",
@@ -77,6 +80,12 @@ REPORTS = {
     "Tâche Propre.csv": "Tâche Propre",
     "Statistiques utilisateurs par mèdicaments  (1).csv": "Statistiques utilisateurs par mèdicaments",
 }
+
+# Rapports lourds : date de depart limitee (temperatures = 1 mesure/minute)
+# En mode incremental, on prend depuis la derniere date en base
+# En mode full, on limite quand meme a HEAVY_REPORTS_DAYS jours
+HEAVY_REPORTS = {"Temperatures.csv"}
+HEAVY_REPORTS_DAYS = 7  # jours max pour les rapports lourds en mode full
 
 
 def log(msg):
@@ -226,9 +235,16 @@ def set_date_range(page, date_from, date_to):
         log(f"    Erreur dates: {e} (on continue avec les défauts)")
 
 
-def download_single_report(page, report_name, filename, download_dir, date_from, date_to):
+def download_single_report(page, report_name, filename, download_dir, date_from, date_to, is_full_mode=False):
     """Télécharge un seul rapport CSV."""
-    log(f"  📥 {report_name}...")
+    # Pour les rapports lourds (temperatures), limiter la plage de dates
+    if filename in HEAVY_REPORTS and is_full_mode:
+        from datetime import timedelta
+        heavy_start = (datetime.now() - timedelta(days=HEAVY_REPORTS_DAYS)).strftime("%d/%m/%Y")
+        log(f"  📥 {report_name} (limite a {HEAVY_REPORTS_DAYS} jours)...")
+        date_from = heavy_start
+    else:
+        log(f"  📥 {report_name}...")
 
     # 1. Cliquer sur le rapport dans la sidebar
     # Les rapports sont dans la sidebar gauche, chercher le texte exact
@@ -360,7 +376,7 @@ def download_single_report(page, report_name, filename, download_dir, date_from,
         return False
 
 
-def download_reports(page, download_dir, date_from, date_to):
+def download_reports(page, download_dir, date_from, date_to, is_full_mode=False):
     """Télécharge tous les rapports CSV."""
     log(f"Navigation vers les rapports: {REPORTS_URL}")
     page.goto(REPORTS_URL, wait_until="networkidle", timeout=30000)
@@ -371,7 +387,8 @@ def download_reports(page, download_dir, date_from, date_to):
     for filename, report_name in REPORTS.items():
         try:
             success = download_single_report(
-                page, report_name, filename, download_dir, date_from, date_to
+                page, report_name, filename, download_dir, date_from, date_to,
+                is_full_mode=is_full_mode
             )
             if success:
                 downloaded.append(filename)
@@ -506,10 +523,10 @@ def main():
             since_date = last_date
             log(f"Mode incremental: derniere date en base = {last_date}")
         else:
-            args.date_from = "01/01/2025"
-            log("Base vide, import complet depuis 01/01/2025")
+            args.date_from = DEFAULT_START_DATE
+            log(f"Base vide, import complet depuis {DEFAULT_START_DATE}")
     elif args.full:
-        args.date_from = args.date_from or "01/01/2025"
+        args.date_from = args.date_from or DEFAULT_START_DATE
         log("Mode complet force (--full)")
     else:
         log(f"Date de debut manuelle: {args.date_from}")
@@ -567,7 +584,8 @@ def main():
         # 2. Télécharger les rapports
         import tempfile
         with tempfile.TemporaryDirectory() as tmp_dir:
-            downloaded = download_reports(page, tmp_dir, args.date_from, args.date_to)
+            downloaded = download_reports(page, tmp_dir, args.date_from, args.date_to,
+                                         is_full_mode=args.full)
 
             if not downloaded:
                 log("ATTENTION: Aucun fichier téléchargé")
