@@ -8,5 +8,11 @@
 __pycache__/
 *.pyc
 
+# Credentials
+.env
+
+# Logs
+logs/
+
 # macOS
 .DS_Store

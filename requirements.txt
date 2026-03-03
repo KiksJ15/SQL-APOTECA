@@ -1,0 +1,11 @@
+# Dashboard
+streamlit>=1.30
+plotly>=5.18
+pandas>=2.0
+numpy>=1.24
+scipy>=1.11
+statsmodels>=0.14
+
+# Automatisation téléchargement CSV
+playwright>=1.40
+python-dotenv>=1.0
