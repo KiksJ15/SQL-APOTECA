@@ -195,28 +195,31 @@ def set_date_range(page, date_from, date_to):
     try:
         # Champs de date du Telerik ReportViewer
         # Le champ "De" (date début)
-        de_input = page.query_selector('input[placeholder*="De" i]')
+        # Chercher les champs de date (inputs texte dans le formulaire)
+        date_inputs = page.query_selector_all('input[type="text"]')
+        # Filtrer ceux qui contiennent une date (format dd/mm/yyyy)
+        de_input = None
+        a_input = None
+        for inp in date_inputs:
+            val = inp.input_value()
+            if val and "/" in val:
+                if de_input is None:
+                    de_input = inp
+                elif a_input is None:
+                    a_input = inp
+
         if not de_input:
-            # Chercher par label
-            de_inputs = page.query_selector_all('input[type="text"]')
-            # Les 2 premiers inputs texte sont souvent De et À
-            if len(de_inputs) >= 2:
-                de_input = de_inputs[0]
-                a_input = de_inputs[1]
-            else:
-                log("    Champs de date non trouvés, on garde les défauts")
-                return
-        else:
-            a_input = page.query_selector('input[placeholder*="À" i]')
+            log("    Champs de date non trouvés, on garde les défauts")
+            return
 
         if de_input:
-            de_input.triple_click()  # Sélectionner tout le texte
-            de_input.fill(date_from)
+            de_input.click(click_count=3)  # Sélectionner tout le texte
+            de_input.type(date_from)
             log(f"    Date De: {date_from}")
 
         if a_input:
-            a_input.triple_click()
-            a_input.fill(date_to)
+            a_input.click(click_count=3)
+            a_input.type(date_to)
             log(f"    Date À: {date_to}")
 
     except Exception as e:

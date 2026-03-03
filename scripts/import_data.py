@@ -657,7 +657,7 @@ def main():
         ("Composants utilisation", import_composants),
         ("Statistiques médicaments", import_statistiques_medicaments),
         ("Distribution précision dosage", import_distribution_precision),
-        ("Stats utilisateurs/médicaments (pivot→long)", import_stats_utilisateurs_medicaments),
+        ("Stats utilisateurs/medicaments (pivot->long)", import_stats_utilisateurs_medicaments),
     ]
 
     total = 0
