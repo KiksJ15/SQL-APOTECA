@@ -124,7 +124,7 @@ def login(page, username, password):
     page.fill('#password', password)
     page.click('button:has-text("Login")')
 
-    # Attendre la navigation post-login
+    # Attendre la navigation post-login (arrive sur #!/app/labs)
     page.wait_for_load_state("networkidle", timeout=15000)
     time.sleep(3)
 
@@ -135,6 +135,44 @@ def login(page, username, password):
         return False
 
     log("Login effectué avec succès")
+
+    # Après login, on est sur #!/app/labs — naviguer vers les rapports
+    # Cliquer sur l'icône rapports (3e icône en haut à droite)
+    log("Navigation vers la page rapports...")
+    try:
+        # Essayer de cliquer l'icône rapport en haut à droite
+        report_icon = None
+        for sel in [
+            'a[href*="reports"]',
+            'a[href*="report"]',
+            '[ng-href*="reports"]',
+            '[ui-sref*="reports"]',
+            '[ui-sref*="report"]',
+        ]:
+            try:
+                el = page.query_selector(sel)
+                if el:
+                    report_icon = el
+                    log(f"  Icône rapports trouvée: {sel}")
+                    break
+            except Exception:
+                continue
+
+        if report_icon:
+            report_icon.click()
+            page.wait_for_load_state("networkidle", timeout=15000)
+            time.sleep(3)
+        else:
+            # Fallback: navigation directe par URL
+            log("  Icône non trouvée, navigation directe vers /reports")
+            page.goto(REPORTS_URL, wait_until="networkidle", timeout=15000)
+            time.sleep(3)
+    except Exception as e:
+        log(f"  Navigation rapports via icône échouée: {e}")
+        page.goto(REPORTS_URL, wait_until="networkidle", timeout=15000)
+        time.sleep(3)
+
+    log("Page rapports atteinte")
     return True
 
 
