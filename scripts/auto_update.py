@@ -61,8 +61,11 @@ LOG_FILE = PROJECT_ROOT / "logs" / "auto_update.log"
 BASE_URL = "https://sxapplapo01.curie.net"
 REPORTS_URL = f"{BASE_URL}/#!/app/reports"
 
-# Liste des rapports CSV à télécharger
-# Clé = nom du fichier attendu dans data/, Valeur = texte exact dans la sidebar
+# Date de depart par defaut pour l'import complet
+DEFAULT_START_DATE = "01/01/2023"
+
+# Liste des rapports CSV a telecharger
+# Cle = nom du fichier attendu dans data/, Valeur = texte exact dans la sidebar
 REPORTS = {
     "Process Step Time.csv": "Process Step Time",
     "Error Opportunity Rate.csv": "Error Opportunity Rate",
@@ -77,6 +80,12 @@ REPORTS = {
     "Tâche Propre.csv": "Tâche Propre",
     "Statistiques utilisateurs par mèdicaments  (1).csv": "Statistiques utilisateurs par mèdicaments",
 }
+
+# Rapports lourds : date de depart limitee (temperatures = 1 mesure/minute)
+# En mode incremental, on prend depuis la derniere date en base
+# En mode full, on limite quand meme a HEAVY_REPORTS_DAYS jours
+HEAVY_REPORTS = {"Temperatures.csv"}
+HEAVY_REPORTS_DAYS = 7  # jours max pour les rapports lourds en mode full
 
 
 def log(msg):
@@ -124,17 +133,69 @@ def login(page, username, password):
     page.fill('#password', password)
     page.click('button:has-text("Login")')
 
-    # Attendre la navigation post-login
+    # Attendre la navigation post-login (arrive sur #!/app/labs)
+    # Le login Angular peut prendre du temps à rediriger
+    time.sleep(5)
     page.wait_for_load_state("networkidle", timeout=15000)
     time.sleep(3)
 
-    # Vérifier qu'on est connecté
-    current_url = page.url
-    if "login" in current_url.lower() or page.query_selector('#username'):
-        log("ERREUR: Login échoué (mauvais identifiants ?)")
+    # Vérifier qu'on est connecté en attendant que l'URL change
+    max_wait = 15
+    logged_in = False
+    for i in range(max_wait):
+        current_url = page.url
+        if "app/labs" in current_url or "app/reports" in current_url or "app/dashboard" in current_url:
+            logged_in = True
+            break
+        time.sleep(1)
+
+    if not logged_in:
+        # Dernier check : le champ username a disparu ?
+        if not page.query_selector('#username:visible'):
+            logged_in = True
+
+    if not logged_in:
+        log(f"ERREUR: Login échoué (URL actuelle: {page.url})")
         return False
 
-    log("Login effectué avec succès")
+    log(f"Login effectué avec succès (URL: {page.url})")
+
+    # Après login, on est sur #!/app/labs — naviguer vers les rapports
+    # Cliquer sur l'icône rapports (3e icône en haut à droite)
+    log("Navigation vers la page rapports...")
+    try:
+        # Essayer de cliquer l'icône rapport en haut à droite
+        report_icon = None
+        for sel in [
+            'a[ui-sref=".reports"]',
+            'a[href="#!/app/reports"]',
+            'a[href*="reports"]',
+            '[ui-sref*="reports"]',
+        ]:
+            try:
+                el = page.query_selector(sel)
+                if el:
+                    report_icon = el
+                    log(f"  Icône rapports trouvée: {sel}")
+                    break
+            except Exception:
+                continue
+
+        if report_icon:
+            report_icon.click()
+            page.wait_for_load_state("networkidle", timeout=15000)
+            time.sleep(3)
+        else:
+            # Fallback: navigation directe par URL
+            log("  Icône non trouvée, navigation directe vers /reports")
+            page.goto(REPORTS_URL, wait_until="networkidle", timeout=15000)
+            time.sleep(3)
+    except Exception as e:
+        log(f"  Navigation rapports via icône échouée: {e}")
+        page.goto(REPORTS_URL, wait_until="networkidle", timeout=15000)
+        time.sleep(3)
+
+    log("Page rapports atteinte")
     return True
 
 
@@ -143,37 +204,47 @@ def set_date_range(page, date_from, date_to):
     try:
         # Champs de date du Telerik ReportViewer
         # Le champ "De" (date début)
-        de_input = page.query_selector('input[placeholder*="De" i]')
+        # Chercher les champs de date (inputs texte dans le formulaire)
+        date_inputs = page.query_selector_all('input[type="text"]')
+        # Filtrer ceux qui contiennent une date (format dd/mm/yyyy)
+        de_input = None
+        a_input = None
+        for inp in date_inputs:
+            val = inp.input_value()
+            if val and "/" in val:
+                if de_input is None:
+                    de_input = inp
+                elif a_input is None:
+                    a_input = inp
+
         if not de_input:
-            # Chercher par label
-            de_inputs = page.query_selector_all('input[type="text"]')
-            # Les 2 premiers inputs texte sont souvent De et À
-            if len(de_inputs) >= 2:
-                de_input = de_inputs[0]
-                a_input = de_inputs[1]
-            else:
-                log("    Champs de date non trouvés, on garde les défauts")
-                return
-        else:
-            a_input = page.query_selector('input[placeholder*="À" i]')
+            log("    Champs de date non trouvés, on garde les défauts")
+            return
 
         if de_input:
-            de_input.triple_click()  # Sélectionner tout le texte
-            de_input.fill(date_from)
+            de_input.click(click_count=3)  # Sélectionner tout le texte
+            de_input.type(date_from)
             log(f"    Date De: {date_from}")
 
         if a_input:
-            a_input.triple_click()
-            a_input.fill(date_to)
+            a_input.click(click_count=3)
+            a_input.type(date_to)
             log(f"    Date À: {date_to}")
 
     except Exception as e:
         log(f"    Erreur dates: {e} (on continue avec les défauts)")
 
 
-def download_single_report(page, report_name, filename, download_dir, date_from, date_to):
+def download_single_report(page, report_name, filename, download_dir, date_from, date_to, is_full_mode=False):
     """Télécharge un seul rapport CSV."""
-    log(f"  📥 {report_name}...")
+    # Pour les rapports lourds (temperatures), limiter la plage de dates
+    if filename in HEAVY_REPORTS and is_full_mode:
+        from datetime import timedelta
+        heavy_start = (datetime.now() - timedelta(days=HEAVY_REPORTS_DAYS)).strftime("%d/%m/%Y")
+        log(f"  📥 {report_name} (limite a {HEAVY_REPORTS_DAYS} jours)...")
+        date_from = heavy_start
+    else:
+        log(f"  📥 {report_name}...")
 
     # 1. Cliquer sur le rapport dans la sidebar
     # Les rapports sont dans la sidebar gauche, chercher le texte exact
@@ -305,7 +376,7 @@ def download_single_report(page, report_name, filename, download_dir, date_from,
         return False
 
 
-def download_reports(page, download_dir, date_from, date_to):
+def download_reports(page, download_dir, date_from, date_to, is_full_mode=False):
     """Télécharge tous les rapports CSV."""
     log(f"Navigation vers les rapports: {REPORTS_URL}")
     page.goto(REPORTS_URL, wait_until="networkidle", timeout=30000)
@@ -316,7 +387,8 @@ def download_reports(page, download_dir, date_from, date_to):
     for filename, report_name in REPORTS.items():
         try:
             success = download_single_report(
-                page, report_name, filename, download_dir, date_from, date_to
+                page, report_name, filename, download_dir, date_from, date_to,
+                is_full_mode=is_full_mode
             )
             if success:
                 downloaded.append(filename)
@@ -337,7 +409,7 @@ def download_reports(page, download_dir, date_from, date_to):
 
 
 def copy_to_data(download_dir):
-    """Copie les CSV téléchargés vers le dossier data/."""
+    """Copie les CSV telecharges vers le dossier data/ et anonymise Process Step Time."""
     DATA_DIR.mkdir(exist_ok=True)
     count = 0
     for f in os.listdir(download_dir):
@@ -346,27 +418,153 @@ def copy_to_data(download_dir):
             dest = DATA_DIR / f
             shutil.copy2(src, dest)
             count += 1
-    log(f"{count} fichiers CSV copiés dans {DATA_DIR}")
+    log(f"{count} fichiers CSV copies dans {DATA_DIR}")
+
+    # Anonymiser Process Step Time (supprimer colonne patient textBox24)
+    pst_file = DATA_DIR / "Process Step Time.csv"
+    if pst_file.exists():
+        log("Anonymisation de Process Step Time (suppression colonne textBox24)...")
+        try:
+            remove_script = SCRIPT_DIR / "remove_column.py"
+            result = subprocess.run(
+                [sys.executable, str(remove_script), str(pst_file)],
+                capture_output=True,
+                text=True,
+                cwd=str(PROJECT_ROOT),
+            )
+            if result.returncode == 0:
+                log(f"  {result.stdout.strip()}")
+                # Remplacer l'original par la version nettoyee
+                cleaned = DATA_DIR / "Process Step Time_cleaned.csv"
+                if cleaned.exists():
+                    log("  Process Step Time_cleaned.csv genere")
+            else:
+                log(f"  Erreur anonymisation: {result.stderr}")
+        except Exception as e:
+            log(f"  Erreur anonymisation: {e}")
+
     return count
 
 
-def run_import():
+def run_import(since_date=None):
     """Lance le script d'import de la base SQLite."""
     import_script = SCRIPT_DIR / "import_data.py"
-    log("Lancement de l'import SQLite...")
+    cmd = [sys.executable, str(import_script)]
+    if since_date:
+        cmd += ["--since", since_date]
+        log(f"Lancement de l'import incremental (depuis {since_date})...")
+    else:
+        log("Lancement de l'import complet...")
     result = subprocess.run(
-        [sys.executable, str(import_script)],
+        cmd,
         capture_output=True,
         text=True,
         cwd=str(PROJECT_ROOT),
     )
     if result.returncode == 0:
-        log("Import terminé avec succès")
+        log("Import termine avec succes")
         for line in result.stdout.strip().split("\n")[-5:]:
             log(f"  {line}")
     else:
         log(f"ERREUR import: {result.stderr}")
     return result.returncode == 0
+
+
+def get_last_date_from_db():
+    """Recupere la derniere date en base pour l'import incremental."""
+    sys.path.insert(0, str(SCRIPT_DIR))
+    try:
+        from import_data import get_last_date
+        db_path = PROJECT_ROOT / "apoteca.db"
+        return get_last_date(str(db_path))
+    except Exception:
+        return None
+    finally:
+        sys.path.pop(0)
+
+
+def show_status():
+    """Affiche l'etat actuel de la base et les donnees manquantes."""
+    import sqlite3
+    db_path = PROJECT_ROOT / "apoteca.db"
+
+    print("=" * 50)
+    print("  STATUT DE LA BASE APOTECA")
+    print("=" * 50)
+
+    if not db_path.exists():
+        print("\n  Base de donnees: NON TROUVEE")
+        print("  -> Lancez: python scripts/auto_update.py --full")
+        return
+
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+
+    # Derniere date par table
+    print("\n  Derniere date par table:")
+    tables_dates = [
+        ("preparations", "SELECT MAX(date(date_fin)) FROM preparations"),
+        ("erreurs", "SELECT MAX(date(date_heure)) FROM erreurs"),
+        ("temperatures", "SELECT MAX(date(date_heure)) FROM temperatures"),
+        ("productivite", "SELECT MAX(date) FROM productivite_utilisateurs"),
+        ("performance", "SELECT MAX(date) FROM performance_journaliere"),
+    ]
+    last_dates = []
+    for name, query in tables_dates:
+        try:
+            cursor.execute(query)
+            row = cursor.fetchone()
+            date_val = row[0] if row and row[0] else "aucune donnee"
+            if row and row[0]:
+                last_dates.append(row[0])
+        except Exception:
+            date_val = "erreur"
+        print(f"    {name:20s} -> {date_val}")
+
+    # Nombre d'enregistrements
+    print("\n  Nombre d'enregistrements:")
+    for table in ["preparations", "erreurs", "temperatures",
+                   "productivite_utilisateurs", "performance_journaliere"]:
+        try:
+            cursor.execute(f"SELECT COUNT(*) FROM {table}")
+            count = cursor.fetchone()[0]
+        except Exception:
+            count = "?"
+        print(f"    {table:35s} -> {count}")
+
+    # Calcul du retard
+    if last_dates:
+        last_date = max(last_dates)
+        from datetime import date as dt_date
+        parts = last_date.split("-")
+        last = dt_date(int(parts[0]), int(parts[1]), int(parts[2]))
+        today = dt_date.today()
+        gap = (today - last).days
+
+        print(f"\n  Derniere donnee : {last_date}")
+        print(f"  Aujourd'hui     : {today}")
+        if gap == 0:
+            print(f"  Statut          : A JOUR")
+        elif gap == 1:
+            print(f"  Statut          : 1 jour de retard")
+        else:
+            print(f"  Statut          : {gap} jours de retard")
+            print(f"\n  -> Pour rattraper: python scripts/auto_update.py")
+            print(f"     (telecharge automatiquement depuis {last_date})")
+    else:
+        print("\n  Base vide!")
+        print("  -> Lancez: python scripts/auto_update.py --full")
+
+    # Dernier log
+    if LOG_FILE.exists():
+        print(f"\n  Dernier log:")
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            for line in lines[-3:]:
+                print(f"    {line.strip()}")
+
+    conn.close()
+    print("\n" + "=" * 50)
 
 
 def discover_page(page):
@@ -407,21 +605,48 @@ def discover_page(page):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Téléchargement automatique des CSV Apoteca")
+    parser = argparse.ArgumentParser(description="Telechargement automatique des CSV Apoteca")
     parser.add_argument("--headed", action="store_true", help="Mode visible (pour debug)")
-    parser.add_argument("--discover", action="store_true", help="Mode découverte de la page")
-    parser.add_argument("--date-from", default="01/01/2025",
-                        help="Date de début au format dd/mm/yyyy (défaut: 01/01/2025)")
+    parser.add_argument("--discover", action="store_true", help="Mode decouverte de la page")
+    parser.add_argument("--status", action="store_true",
+                        help="Affiche l'etat de la base et les donnees manquantes")
+    parser.add_argument("--full", action="store_true",
+                        help="Import complet (depuis 01/01/2023). Sans ce flag, mode incremental.")
+    parser.add_argument("--date-from", default=None,
+                        help="Date de debut au format dd/mm/yyyy (defaut: auto)")
     parser.add_argument("--date-to", default=None,
-                        help="Date de fin au format dd/mm/yyyy (défaut: aujourd'hui)")
+                        help="Date de fin au format dd/mm/yyyy (defaut: aujourd'hui)")
     args = parser.parse_args()
+
+    if args.status:
+        show_status()
+        return
 
     if not args.date_to:
         args.date_to = datetime.now().strftime("%d/%m/%Y")
 
+    # Mode incremental : detecter la derniere date en base
+    since_date = None  # pour import_data.py (format YYYY-MM-DD)
+    if not args.full and not args.date_from:
+        last_date = get_last_date_from_db()
+        if last_date:
+            # Convertir YYYY-MM-DD -> dd/mm/yyyy pour Apoteca
+            parts = last_date.split("-")
+            args.date_from = f"{parts[2]}/{parts[1]}/{parts[0]}"
+            since_date = last_date
+            log(f"Mode incremental: derniere date en base = {last_date}")
+        else:
+            args.date_from = DEFAULT_START_DATE
+            log(f"Base vide, import complet depuis {DEFAULT_START_DATE}")
+    elif args.full:
+        args.date_from = args.date_from or DEFAULT_START_DATE
+        log("Mode complet force (--full)")
+    else:
+        log(f"Date de debut manuelle: {args.date_from}")
+
     log("=" * 60)
-    log("Début de la mise à jour automatique")
-    log(f"Période: {args.date_from} → {args.date_to}")
+    log("Debut de la mise a jour automatique")
+    log(f"Periode: {args.date_from} -> {args.date_to}")
 
     username, password = load_credentials()
 
@@ -472,7 +697,8 @@ def main():
         # 2. Télécharger les rapports
         import tempfile
         with tempfile.TemporaryDirectory() as tmp_dir:
-            downloaded = download_reports(page, tmp_dir, args.date_from, args.date_to)
+            downloaded = download_reports(page, tmp_dir, args.date_from, args.date_to,
+                                         is_full_mode=args.full)
 
             if not downloaded:
                 log("ATTENTION: Aucun fichier téléchargé")
@@ -486,10 +712,10 @@ def main():
 
         browser.close()
 
-        # 4. Relancer l'import
-        run_import()
+        # 4. Relancer l'import (incremental si since_date)
+        run_import(since_date=since_date)
 
-    log("Mise à jour terminée")
+    log("Mise a jour terminee")
     log("=" * 60)
 
 
