@@ -4,6 +4,7 @@ Dashboard interactif APOTECA - Simulation du robot de chimiothérapie
 Lance avec: streamlit run dashboard/app.py
 """
 
+import datetime
 import sqlite3
 import sys
 from pathlib import Path
@@ -78,11 +79,14 @@ st.sidebar.header("Filtres")
 # Plage de dates
 dates = query("SELECT MIN(date(date_fin)) as d_min, MAX(date(date_fin)) as d_max FROM preparations WHERE date_fin IS NOT NULL")
 date_min = pd.to_datetime(dates["d_min"][0]).date()
-date_max = pd.to_datetime(dates["d_max"][0]).date()
+date_max_db = pd.to_datetime(dates["d_max"][0]).date()
+# Toujours permettre de naviguer jusqu'à aujourd'hui, même si les données
+# n'ont pas encore été importées pour les jours récents
+date_max = max(date_max_db, datetime.date.today())
 
 date_range = st.sidebar.date_input(
     "Période",
-    value=(date_min, date_max),
+    value=(date_min, date_max_db),
     min_value=date_min,
     max_value=date_max,
 )
