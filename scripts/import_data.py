@@ -649,13 +649,9 @@ def clear_data_since(cursor, since_date):
         except Exception as e:
             print(f"  {table}: erreur suppression: {e}")
 
-    # Tables sans date (toujours reimporter en entier)
-    for table in [
-        "utilisation_medicaments", "composants_utilisation",
-        "statistiques_medicaments", "distribution_precision_dosage",
-        "activite_utilisateurs",
-    ]:
-        cursor.execute(f"DELETE FROM {table}")
+    # Tables sans date : en mode incremental, on les garde intactes car les CSV
+    # partiels (plage de dates restreinte) ne contiennent pas l'historique complet.
+    # Ces tables ne sont vidées qu'en mode complet (sans --since).
 
 
 def main():
@@ -714,6 +710,16 @@ def main():
         print("Tables videes avant import.\n")
 
     # Import de chaque fichier
+    # Les tables sans date ne sont réimportées qu'en mode complet car les CSV
+    # partiels (plage de dates restreinte) ne contiennent pas l'historique complet.
+    tables_sans_date = {
+        import_activite_utilisateurs,
+        import_utilisation_medicaments,
+        import_composants,
+        import_statistiques_medicaments,
+        import_distribution_precision,
+    }
+
     importers = [
         ("Activité utilisateurs", import_activite_utilisateurs),
         ("Process Step Time", import_process_step_time),
@@ -731,6 +737,9 @@ def main():
 
     total = 0
     for name, importer in importers:
+        if args.since and importer in tables_sans_date:
+            print(f"  {name}: SKIP (mode incremental, données conservées)")
+            continue
         try:
             count = importer(cursor, data_dir)
             print(f"  {name}: {count} enregistrements importés")
